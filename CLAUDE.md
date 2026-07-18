@@ -198,3 +198,21 @@ python -c "import bot"
 - Secrets in Code oder Repository schreiben.
 - Berechnung in `bot.py` verstecken, statt sie in reine Logik auszulagern.
 - Große Funktionen mit mehreren Verantwortlichkeiten.
+
+## Sprache: Code und Artefakte durchgängig auf Englisch
+
+Das gesamte Projekt ist englischsprachig. In **Englisch** zu halten sind:
+
+- **Bezeichner** — Variablen, Funktionen, Klassen, Module.
+- **Kommentare und Docstrings.**
+- **Log-Nachrichten.**
+- **Alle nutzersichtbaren Bot-Texte** — Command-Namen, Command-Beschreibungen,
+  Parameternamen, Antworten, Embeds, Fehlermeldungen. Der Herzschlag-Command
+  heißt entsprechend `/plant`, nicht `/pflanze`.
+- **README und jede weitere Repo-Dokumentation.**
+- **Commit-Messages** (weiterhin Conventional Commits).
+- **GitHub-Metadaten** — About-Text und Topics.
+
+Einzige Ausnahme: Die laufende Kommunikation mit dem Maintainer in der
+Claude-Code-Session bleibt auf Deutsch. Nur was ins Repository eingecheckt wird
+oder Endnutzer erreicht, ist Englisch.
