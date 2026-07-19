@@ -2,10 +2,10 @@
 
 One row per guild holds the plant's whole persistent state: its seed, its
 serialised body, how many growth steps it has taken, its moisture with the
-timestamp that moisture was sampled at, the timestamp growth last advanced, and
-the channel it is watered from. All database access is isolated here; the pure
-logic never touches it. SQLite ships with the Python standard library, so this
-adds no dependency.
+timestamp that moisture was sampled at, the channel it is watered from, and the
+id of the living plant message the bot keeps updated in that channel. All database
+access is isolated here; the pure logic never touches it. SQLite ships with the
+Python standard library, so this adds no dependency.
 
 The body is stored as JSON produced by :func:`structure.serialize`. The ``seed``
 and ``step_count`` columns mirror values inside that blob for easy inspection;
@@ -29,18 +29,19 @@ class GuildState:
     """Persistent per-guild plant state.
 
     ``structure`` is the accumulated body (which itself carries the seed and step
-    count). ``moisture`` is the value sampled at ``last_update``; ``last_growth``
-    is when growth steps were last applied. Both timestamps are Unix time, so they
-    stay comparable across restarts. ``channel_id`` is the watering channel, or
-    ``None`` until one is chosen with ``/epiphyte-channel``.
+    count). ``moisture`` is the value sampled at ``last_update`` (a Unix time, so
+    it stays comparable across restarts). ``channel_id`` is the watering channel,
+    or ``None`` until one is chosen with ``/epiphyte-channel``; ``message_id`` is
+    the living plant message the bot edits in place each tick, or ``None`` until
+    it has been posted.
     """
 
     guild_id: int
     structure: structure.Structure
     moisture: float
     last_update: float
-    last_growth: float
     channel_id: int | None
+    message_id: int | None
 
 
 class Storage:
@@ -62,8 +63,8 @@ class Storage:
                 step_count    INTEGER NOT NULL,
                 moisture      REAL    NOT NULL,
                 last_update   REAL    NOT NULL,
-                last_growth   REAL    NOT NULL,
-                channel_id    INTEGER
+                channel_id    INTEGER,
+                message_id    INTEGER
             )
             """
         )
@@ -72,8 +73,8 @@ class Storage:
     def load_all(self) -> dict[int, GuildState]:
         """Load every guild's state into a dict keyed by guild id."""
         rows = self._connection.execute(
-            "SELECT guild_id, structure, moisture, last_update, last_growth, "
-            "channel_id FROM plant_state"
+            "SELECT guild_id, structure, moisture, last_update, channel_id, "
+            "message_id FROM plant_state"
         ).fetchall()
         return {
             row["guild_id"]: GuildState(
@@ -81,8 +82,8 @@ class Storage:
                 structure=structure.deserialize(json.loads(row["structure"])),
                 moisture=row["moisture"],
                 last_update=row["last_update"],
-                last_growth=row["last_growth"],
                 channel_id=row["channel_id"],
+                message_id=row["message_id"],
             )
             for row in rows
         }
@@ -93,11 +94,11 @@ class Storage:
             """
             INSERT INTO plant_state (
                 guild_id, seed, structure, step_count,
-                moisture, last_update, last_growth, channel_id
+                moisture, last_update, channel_id, message_id
             )
             VALUES (
                 :guild_id, :seed, :structure, :step_count,
-                :moisture, :last_update, :last_growth, :channel_id
+                :moisture, :last_update, :channel_id, :message_id
             )
             ON CONFLICT(guild_id) DO UPDATE SET
                 seed        = excluded.seed,
@@ -105,8 +106,8 @@ class Storage:
                 step_count  = excluded.step_count,
                 moisture    = excluded.moisture,
                 last_update = excluded.last_update,
-                last_growth = excluded.last_growth,
-                channel_id  = excluded.channel_id
+                channel_id  = excluded.channel_id,
+                message_id  = excluded.message_id
             """,
             {
                 "guild_id": state.guild_id,
@@ -115,8 +116,8 @@ class Storage:
                 "step_count": state.structure.step_count,
                 "moisture": state.moisture,
                 "last_update": state.last_update,
-                "last_growth": state.last_growth,
                 "channel_id": state.channel_id,
+                "message_id": state.message_id,
             },
         )
         self._connection.commit()

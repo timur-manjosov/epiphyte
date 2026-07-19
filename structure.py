@@ -1,4 +1,4 @@
-"""Pure growth logic for Epiphyte: the plant's accumulating body.
+"""Pure body logic for Epiphyte: the plant's accumulating body and its scars.
 
 No side effects, no clock reads, no ``import discord`` and no Pillow. Given the
 same inputs these functions always return the same outputs, which makes them
@@ -8,6 +8,11 @@ This module replaces the old "moisture -> L-system depth -> fixed shape" model.
 A plant is no longer a function of its current moisture: it is the accumulated
 result of its whole life. Growth is applied in discrete steps, each step advances
 every living tip a little, and what has grown stays part of the body.
+
+Vitality and body are decoupled. When moisture is healthy the plant grows; when
+it is parched the plant dies back from the outside in, turning living wood into
+dead wood. Dead wood is never removed and never revives, so a drought is written
+permanently into the body — a scar still legible long after the plant recovers.
 
 Two plants with the same ``seed`` are identical (same :class:`Genome`, same
 growth) — that seeded determinism *is* each plant's individuality. Growth is
@@ -61,12 +66,28 @@ LENGTH_JITTER: float = 0.15
 #: The direction the growing tip is gently pulled toward, in degrees (straight up).
 UPRIGHT_ANGLE: float = 90.0
 
+# --- Dieback constants (the body remembers drought) --------------------------
+#
+# Vitality (moisture) and body are decoupled. Above the threshold the plant lives
+# and grows; below it the plant is parched and dies back from the outside in.
+# Dead wood is never removed and never revives, so a drought leaves a permanent
+# scar in the body that stays legible long after the plant has recovered.
+
+#: Vitality below which the plant stops growing and begins to die back. Set deep
+#: inside the withered band, so only a real, sustained drought kills wood.
+DIEBACK_MOISTURE_THRESHOLD: float = 0.08
+#: Chance an exposed living end dies in one step at zero vitality; scaled down
+#: toward the threshold. Small, so dieback is the slow toll of a lasting drought,
+#: not a brief quiet spell — and it stays partial, leaving survivors to recover.
+DIEBACK_MAX_RATE: float = 0.05
+
 
 class NodeState(Enum):
-    """Whether a node can still grow (``TIP``) or has lignified (``WOODY``)."""
+    """A node's vitality: growing tip, living wood, or dead wood (a scar)."""
 
     TIP = "tip"
     WOODY = "woody"
+    DEAD = "dead"
 
 
 @dataclass(frozen=True)
@@ -126,6 +147,10 @@ class Genome:
     gravitropism: float
     #: Growth vigour: scales how readily tips act at a given moisture.
     vigor: float
+    #: Leaf size multiplier — how large this plant's individual leaves render.
+    leaf_size: float
+    #: Leaf density multiplier — how thickly living tips are foliaged.
+    leaf_density: float
 
 
 def genome_from_seed(seed: int) -> Genome:
@@ -138,6 +163,8 @@ def genome_from_seed(seed: int) -> Genome:
         internode_length=rng.uniform(8.0, 13.0),
         gravitropism=rng.uniform(0.04, 0.12),
         vigor=rng.uniform(0.8, 1.3),
+        leaf_size=rng.uniform(0.8, 1.4),
+        leaf_density=rng.uniform(0.7, 1.5),
     )
 
 
@@ -227,39 +254,108 @@ def _grow_tip(
         )
 
 
-def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> Structure:
-    """Return a new structure grown ``steps`` steps under ``moisture`` (pure).
+def _children_map(nodes: list[Node]) -> dict[int, list[int]]:
+    """Map each node id to the ids of its children (empty for a leaf/tip)."""
+    children: dict[int, list[int]] = {}
+    for node in nodes:
+        if node.parent_id is not None:
+            children.setdefault(node.parent_id, []).append(node.id)
+    return children
 
-    Each step, every living tip independently decides — via randomness seeded by
-    ``(seed, node_id, step_index)`` — whether to extend, and if so whether to also
-    branch or to cap off. The chance a tip extends scales with ``moisture``, so
-    high moisture means brisk growth and low moisture almost none; that is the
-    honest signal, gated exactly like the moisture. Once the crown is over its
-    carrying capacity, extending tips cap off under a termination pressure that
-    trims it back, so growth stays bounded and steady — it can neither explode nor
-    die out.
 
-    Deterministic and chunk-invariant: the same total steps produce the same
-    result whether run at once or one at a time. The input structure is never
-    mutated.
+def _living_frontier(nodes: list[Node]) -> list[Node]:
+    """Return the living nodes at the outer edge of living tissue.
+
+    A node is on the frontier if it is alive (``TIP`` or ``WOODY``) and every one
+    of its children is already ``DEAD`` — a tip, having no children, always
+    qualifies. Recomputed each dieback step, this frontier marches inward: the
+    outermost tips die first, then the wood they fed becomes exposed and dies next.
     """
-    extension_chance = _clamp01(moisture) * EXTENSION_RATE
+    children = _children_map(nodes)
+    frontier: list[Node] = []
+    for node in nodes:
+        if node.state is NodeState.DEAD:
+            continue
+        kids = children.get(node.id, ())
+        if all(nodes[k].state is NodeState.DEAD for k in kids):
+            frontier.append(node)
+    return frontier
+
+
+def _growth_step(
+    nodes: list[Node],
+    genome: Genome,
+    seed: int,
+    extension_chance: float,
+    capacity: int,
+    step_index: int,
+) -> None:
+    """Apply one growth step: living tips may extend, branch, or cap off."""
+    tips = [node for node in nodes if node.state is NodeState.TIP]
+    # The termination pressure is sampled once per step from the crown size at its
+    # start, so it does not depend on the order tips are visited within the step,
+    # and it is zero until the crown exceeds capacity.
+    overshoot = max(0, len(tips) - capacity) / capacity
+    terminate_chance = min(MAX_TERMINATION, OVERCAPACITY_PRESSURE * overshoot)
+    for tip in tips:
+        rng = random.Random(f"{seed}:{tip.id}:{step_index}")
+        if rng.random() >= extension_chance:
+            continue  # dormant this step; may grow in a later one
+        _grow_tip(tip, nodes, genome, step_index, terminate_chance, rng)
+
+
+def _dieback_step(nodes: list[Node], seed: int, vitality: float, step_index: int) -> None:
+    """Apply one dieback step: the exposed living frontier may die (turn ``DEAD``).
+
+    The chance each exposed end dies scales with how far vitality has fallen below
+    :data:`DIEBACK_MOISTURE_THRESHOLD`, so a deeper, longer drought kills more and
+    reaches further in. Dead wood is never removed and never revives — it stays a
+    scar — so a drought is permanently legible in the body. The germ (id 0) never
+    dies here; a plant's actual death and reseeding belong to a later phase.
+    """
+    severity = _clamp01((DIEBACK_MOISTURE_THRESHOLD - vitality) / DIEBACK_MOISTURE_THRESHOLD)
+    death_chance = DIEBACK_MAX_RATE * severity
+    if death_chance <= 0.0:
+        return
+    for node in _living_frontier(nodes):
+        if node.id == 0:
+            continue  # the germ base is immortal in this phase
+        rng = random.Random(f"dieback:{seed}:{node.id}:{step_index}")
+        if rng.random() < death_chance:
+            nodes[node.id] = replace(node, state=NodeState.DEAD)
+
+
+def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> Structure:
+    """Return the structure advanced ``steps`` life-steps under ``moisture`` (pure).
+
+    Each step runs one of two regimes, chosen by the vitality that ``moisture``
+    gates:
+
+    * **Growth** (vitality at or above :data:`DIEBACK_MOISTURE_THRESHOLD`): every
+      living tip may extend, branch, or cap off. The chance a tip extends scales
+      with moisture — brisk when wet, almost nothing when barely healthy — and the
+      crown self-limits at its carrying capacity. This is the honest signal.
+    * **Dieback** (vitality below the threshold): the plant is parched, so instead
+      of growing it dies back from the outside in. Dead wood stays in the body
+      forever, a permanent scar of the drought.
+
+    So the number of dead nodes only ever rises, and lignified wood (living plus
+    dead) never falls: the body accumulates monotonically and remembers its whole
+    life. Decisions are seeded by ``(seed, node_id, step_index)``, so this is
+    deterministic and chunk-invariant — the same total steps produce the same
+    result whether run at once or one at a time. The input is never mutated.
+    """
+    vitality = _clamp01(moisture)
+    extension_chance = vitality * EXTENSION_RATE
     capacity = _capacity(genome)
     nodes = list(structure.nodes)
     step_index = structure.step_count
 
     for _ in range(max(0, steps)):
-        tips = [node for node in nodes if node.state is NodeState.TIP]
-        # The termination pressure is sampled once per step from the crown size at
-        # its start, so it does not depend on the order tips are visited within
-        # the step, and it is zero until the crown exceeds capacity.
-        overshoot = max(0, len(tips) - capacity) / capacity
-        terminate_chance = min(MAX_TERMINATION, OVERCAPACITY_PRESSURE * overshoot)
-        for tip in tips:
-            rng = random.Random(f"{structure.seed}:{tip.id}:{step_index}")
-            if rng.random() >= extension_chance:
-                continue  # dormant this step; may grow in a later one
-            _grow_tip(tip, nodes, genome, step_index, terminate_chance, rng)
+        if vitality < DIEBACK_MOISTURE_THRESHOLD:
+            _dieback_step(nodes, structure.seed, vitality, step_index)
+        else:
+            _growth_step(nodes, genome, structure.seed, extension_chance, capacity, step_index)
         step_index += 1
 
     return Structure(nodes=tuple(nodes), step_count=step_index, seed=structure.seed)
