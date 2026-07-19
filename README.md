@@ -30,14 +30,25 @@ shape. A plant *is* its history.
 
 - **Watering** — each message in the chosen channel adds a little moisture.
 - **Withering** — moisture decays exponentially; left in silence, the plant
-  falls from thriving to withered over roughly three days.
-- **Growth** — the plant is a persistent, growing body, not a snapshot. Healthy
-  time adds discrete growth steps that extend and branch it, and what grows
-  *stays*. Moisture sets the pace — a dry plant barely grows — so a full tree is
-  the reward of weeks of sustained activity, not a single busy evening.
+  falls from thriving to withered over roughly three days. A *prolonged* drought
+  goes further: the outermost branches die back for good, from the tips inward.
+- **Growth** — the plant is a persistent, growing body, not a snapshot. On a
+  steady heartbeat the bot grows it one step — extending and branching it — and
+  what grows *stays*. Moisture sets the pace: a dry plant barely grows, so a full
+  tree is the reward of weeks of sustained activity, not a single busy evening.
+- **A life of its own** — the plant lives in the channel as a single message the
+  bot keeps updated in place. It grows and withers there on its own over days,
+  with no command and nobody watching. Growth advances only while the bot is
+  running; moisture, by contrast, is decayed exactly across any downtime, so a
+  quiet week away still shows.
+- **A body that remembers** — vitality and body are separate things. Leaves
+  flush on the living tips when moisture is high and fall when it drops, and
+  colour and posture follow the mood of the moment — but growth and death are
+  permanent. A drought that kills a branch leaves a bare, weathered scar that
+  stays legible long after the leaves, and the rest of the plant, have recovered.
 - **Individuality** — every server's plant grows from its own random seed: a
-  genome fixing its branching angles, bushiness and vigour, so no two servers
-  ever grow the same plant.
+  genome fixing its branching angles, bushiness, vigour and foliage, so no two
+  servers ever grow the same plant.
 - **Fairness** — repeated watering by the same person within a window yields
   progressively less, and growth is gated by moisture, so no one can farm a big
   tree by flooding.
@@ -48,6 +59,11 @@ shape. A plant *is* its history.
 Same rules, different seeds — four servers' mature plants, each an individual:
 
 ![Four different mature plants grown from different seeds](assets/individuals.png)
+
+Vitality plays over a body that keeps the record — lush, then a drought, then
+recovered. The leaves return, but the dead branch the drought cost stays as a scar:
+
+![A plant lush, then parched by a drought, then recovered while a dead branch remains as a scar](assets/biography.png)
 
 ## Quickstart
 
@@ -98,10 +114,13 @@ directory to remember each server's plant across restarts.
 
 ### 4. Use it in Discord
 
-1. **`/epiphyte-channel #channel`** — choose the channel that waters the plant.
-   Until this is set, messages are ignored.
-2. Chat in that channel — every message quietly waters the plant.
-3. **`/plant`** — render the plant, growing it by whatever steps have come due.
+1. **`/epiphyte-channel #channel`** — choose the channel the plant lives in. The
+   bot posts the living plant message there straight away; until this is set,
+   messages are ignored.
+2. Chat in that channel — every message quietly waters the plant, and it grows
+   and withers in the living message on its own over time.
+3. **`/plant`** *(optional)* — get a private snapshot of the plant right now, and
+   bring the living message back down if it has scrolled out of view.
 
 ## Configuration
 
@@ -117,15 +136,16 @@ lives in the code or repository.
 
 | Command | What it does |
 |---|---|
-| `/epiphyte-channel #channel` | Set the channel whose messages water the plant. |
-| `/plant` | Advance growth to now, then render the plant (image + moisture + stage + age). |
+| `/epiphyte-channel #channel` | Choose the channel the plant lives in, and post its living message there. |
+| `/plant` | Show a private snapshot now, and re-anchor the living message if it has scrolled away. Never grows the plant — the heartbeat does that. |
 
 ## Development
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`) and
-the plant's genome and accumulating growth (`structure.py`) — is tested with
-pytest and depends on neither Discord nor Pillow. Rendering (`render.py`) is
-isolated Pillow I/O, and persistence (`storage.py`) is isolated SQLite I/O.
+the plant's genome, accumulating growth and drought dieback (`structure.py`) — is
+tested with pytest and depends on neither Discord nor Pillow. Rendering
+(`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated
+SQLite I/O.
 
 ```bash
 pip install -r requirements-dev.txt
@@ -140,7 +160,8 @@ design guidelines.
 
 Python, [discord.py](https://github.com/Rapptz/discord.py) (slash commands only,
 `discord.Client` + a `CommandTree`), [Pillow](https://python-pillow.org/) for
-rendering, and SQLite from the standard library. Colours follow the
+rendering, [APScheduler](https://github.com/agronholm/apscheduler) for the
+metabolic tick, and SQLite from the standard library. Colours follow the
 [Nord](https://www.nordtheme.com/) palette.
 
 ## License
