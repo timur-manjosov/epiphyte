@@ -14,6 +14,12 @@ it is parched the plant dies back from the outside in, turning living wood into
 dead wood. Dead wood is never removed and never revives, so a drought is written
 permanently into the body — a scar still legible long after the plant recovers.
 
+A drought that never lifts reaches the base and kills the whole plant: once every
+node is dead the plant is dead. From that death a successor germinates — a
+single-gene mutation of the parent's seed, so it resembles the parent yet is its
+own individual — carrying the lineage (generation and parent seed) forward. There
+is no final state; the line simply continues.
+
 Two plants with the same ``seed`` are identical (same :class:`Genome`, same
 growth) — that seeded determinism *is* each plant's individuality. Growth is
 also chunk-invariant: running ``steps`` steps at once yields exactly the same
@@ -76,10 +82,13 @@ UPRIGHT_ANGLE: float = 90.0
 #: Vitality below which the plant stops growing and begins to die back. Set deep
 #: inside the withered band, so only a real, sustained drought kills wood.
 DIEBACK_MOISTURE_THRESHOLD: float = 0.08
-#: Chance an exposed living end dies in one step at zero vitality; scaled down
-#: toward the threshold. Small, so dieback is the slow toll of a lasting drought,
-#: not a brief quiet spell — and it stays partial, leaving survivors to recover.
-DIEBACK_MAX_RATE: float = 0.05
+#: Chance an exposed living end dies in one step at zero vitality.
+DIEBACK_MAX_RATE: float = 0.5
+#: Steepness of the dieback curve in the drought's severity. High, so a moderate
+#: drought only nibbles the outer crown (Phase 7's partial scars, with survivors),
+#: while a lasting silence that drives vitality to zero collapses the whole plant
+#: at pace — the difference between a bad week and abandonment.
+DIEBACK_EXPONENT: float = 2.5
 
 
 class NodeState(Enum):
@@ -115,16 +124,21 @@ class Node:
 
 @dataclass(frozen=True)
 class Structure:
-    """A plant body: its nodes as a tree, plus the ``seed`` and ``step_count``.
+    """A plant body: its nodes as a tree, its ``seed``, age and lineage.
 
     ``nodes`` is ordered by id (``nodes[i].id == i``); ``nodes[0]`` is the germ.
     ``step_count`` is how many growth steps have been applied so far, and doubles
-    as the index of the next step to run.
+    as the index of the next step to run. ``generation`` is ``1`` for a founding
+    plant and rises with each successor; ``parent_seed`` is the seed of the
+    predecessor this plant sprang from (``None`` for a founder), so the body
+    carries its own lineage.
     """
 
     nodes: tuple[Node, ...]
     step_count: int
     seed: int
+    generation: int = 1
+    parent_seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -153,23 +167,66 @@ class Genome:
     leaf_density: float
 
 
+# --- Heredity: genes packed into the seed's bit-fields -------------------------
+#
+# Each gene is an independent bit-field of the seed, scaled into its range below.
+# Because the genes are independent, a mutation can re-roll a single trait while
+# the child inherits all the others — so a descendant clearly resembles its parent
+# yet is its own individual, and a lineage drifts one trait at a time.
+_GENE_BITS = 7
+_GENE_MAX = (1 << _GENE_BITS) - 1  # 127 levels per gene
+_GENE_COUNT = 8                    # eight genes -> 56 of the seed's bits
+
+
+def _allele(seed: int, index: int) -> float:
+    """Read gene ``index`` from the seed's bit-field as a value in ``[0, 1]``."""
+    return ((seed >> (index * _GENE_BITS)) & _GENE_MAX) / _GENE_MAX
+
+
+def _scaled(low: float, high: float, allele: float) -> float:
+    """Scale a ``[0, 1]`` allele into the gene's ``[low, high]`` range."""
+    return low + allele * (high - low)
+
+
 def genome_from_seed(seed: int) -> Genome:
-    """Derive a plant's :class:`Genome` deterministically from an integer seed."""
-    rng = random.Random(f"epiphyte-genome:{seed}")
+    """Derive a plant's :class:`Genome` deterministically from an integer seed.
+
+    Each gene reads an independent bit-field of the seed, so two seeds differing in
+    one field share every other trait — which is what lets :func:`mutate` breed a
+    recognisable but distinct descendant.
+    """
     return Genome(
-        branch_angle=rng.uniform(26.0, 50.0),
-        angle_jitter=rng.uniform(4.0, 9.0),
-        branch_probability=rng.uniform(0.18, 0.34),
-        internode_length=rng.uniform(8.0, 13.0),
-        gravitropism=rng.uniform(0.04, 0.12),
-        vigor=rng.uniform(0.8, 1.3),
-        leaf_size=rng.uniform(0.8, 1.4),
-        leaf_density=rng.uniform(0.7, 1.5),
+        branch_angle=_scaled(26.0, 50.0, _allele(seed, 0)),
+        angle_jitter=_scaled(4.0, 9.0, _allele(seed, 1)),
+        branch_probability=_scaled(0.18, 0.34, _allele(seed, 2)),
+        internode_length=_scaled(8.0, 13.0, _allele(seed, 3)),
+        gravitropism=_scaled(0.04, 0.12, _allele(seed, 4)),
+        vigor=_scaled(0.8, 1.3, _allele(seed, 5)),
+        leaf_size=_scaled(0.8, 1.4, _allele(seed, 6)),
+        leaf_density=_scaled(0.7, 1.5, _allele(seed, 7)),
     )
 
 
-def germinate(seed: int) -> Structure:
-    """Return a fresh structure: a single germ tip at the origin, growing up."""
+def mutate(seed: int) -> int:
+    """Return a deterministic single-gene mutation of ``seed``.
+
+    Exactly one gene's bit-field is re-rolled to a different value while every
+    other gene is inherited unchanged, so the result is always different from
+    ``seed`` yet a close relative of it. Pure and deterministic.
+    """
+    rng = random.Random(f"epiphyte-mutate:{seed}")
+    shift = rng.randrange(_GENE_COUNT) * _GENE_BITS
+    allele = (seed >> shift) & _GENE_MAX
+    changed = allele ^ rng.randint(1, _GENE_MAX)  # nonzero xor -> guaranteed change
+    return (seed & ~(_GENE_MAX << shift)) | (changed << shift)
+
+
+def germinate(seed: int, generation: int = 1, parent_seed: int | None = None) -> Structure:
+    """Return a fresh structure: a single germ tip at the origin, growing up.
+
+    ``generation`` and ``parent_seed`` carry the lineage; a founding plant leaves
+    them at their defaults (generation 1, no parent).
+    """
     germ = Node(
         id=0,
         parent_id=None,
@@ -180,7 +237,29 @@ def germinate(seed: int) -> Structure:
         order=0,
         state=NodeState.TIP,
     )
-    return Structure(nodes=(germ,), step_count=0, seed=seed)
+    return Structure(
+        nodes=(germ,), step_count=0, seed=seed, generation=generation, parent_seed=parent_seed
+    )
+
+
+def is_dead(structure: Structure) -> bool:
+    """True if every node is dead — the whole plant, inner wood and all, has died."""
+    return all(node.state is NodeState.DEAD for node in structure.nodes)
+
+
+def germinate_successor(structure: Structure) -> Structure:
+    """Germinate a dead plant's successor: a mutated seed, the next generation.
+
+    The successor's seed is a single-gene :func:`mutate` of the parent's, so it
+    resembles the parent but is its own individual; ``generation`` rises by one and
+    the parent's seed is recorded as lineage. Pure — the caller (the adapter)
+    decides *when* a dead plant reseeds.
+    """
+    return germinate(
+        mutate(structure.seed),
+        generation=structure.generation + 1,
+        parent_seed=structure.seed,
+    )
 
 
 def _clamp01(value: float) -> float:
@@ -263,7 +342,7 @@ def _children_map(nodes: list[Node]) -> dict[int, list[int]]:
     return children
 
 
-def _living_frontier(nodes: list[Node]) -> list[Node]:
+def _living_frontier(nodes: list[Node], children: dict[int, list[int]]) -> list[Node]:
     """Return the living nodes at the outer edge of living tissue.
 
     A node is on the frontier if it is alive (``TIP`` or ``WOODY``) and every one
@@ -271,7 +350,6 @@ def _living_frontier(nodes: list[Node]) -> list[Node]:
     qualifies. Recomputed each dieback step, this frontier marches inward: the
     outermost tips die first, then the wood they fed becomes exposed and dies next.
     """
-    children = _children_map(nodes)
     frontier: list[Node] = []
     for node in nodes:
         if node.state is NodeState.DEAD:
@@ -310,16 +388,20 @@ def _dieback_step(nodes: list[Node], seed: int, vitality: float, step_index: int
     The chance each exposed end dies scales with how far vitality has fallen below
     :data:`DIEBACK_MOISTURE_THRESHOLD`, so a deeper, longer drought kills more and
     reaches further in. Dead wood is never removed and never revives — it stays a
-    scar — so a drought is permanently legible in the body. The germ (id 0) never
-    dies here; a plant's actual death and reseeding belong to a later phase.
+    scar — so a drought is permanently legible in the body. A drought that never
+    lifts reaches the very base and kills the whole plant (see :func:`is_dead`);
+    only a germ that has *never grown* is spared, lying dormant as a seed rather
+    than dying, so an unwatered fresh sprout waits for water instead of dying on
+    the spot.
     """
     severity = _clamp01((DIEBACK_MOISTURE_THRESHOLD - vitality) / DIEBACK_MOISTURE_THRESHOLD)
-    death_chance = DIEBACK_MAX_RATE * severity
+    death_chance = DIEBACK_MAX_RATE * severity ** DIEBACK_EXPONENT
     if death_chance <= 0.0:
         return
-    for node in _living_frontier(nodes):
-        if node.id == 0:
-            continue  # the germ base is immortal in this phase
+    children = _children_map(nodes)
+    for node in _living_frontier(nodes, children):
+        if node.id == 0 and not children.get(0):
+            continue  # a germ that never grew is a dormant seed, not a dying plant
         rng = random.Random(f"dieback:{seed}:{node.id}:{step_index}")
         if rng.random() < death_chance:
             nodes[node.id] = replace(node, state=NodeState.DEAD)
@@ -358,7 +440,13 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
             _growth_step(nodes, genome, structure.seed, extension_chance, capacity, step_index)
         step_index += 1
 
-    return Structure(nodes=tuple(nodes), step_count=step_index, seed=structure.seed)
+    return Structure(
+        nodes=tuple(nodes),
+        step_count=step_index,
+        seed=structure.seed,
+        generation=structure.generation,
+        parent_seed=structure.parent_seed,
+    )
 
 
 def serialize(structure: Structure) -> dict:
@@ -366,6 +454,8 @@ def serialize(structure: Structure) -> dict:
     return {
         "seed": structure.seed,
         "step_count": structure.step_count,
+        "generation": structure.generation,
+        "parent_seed": structure.parent_seed,
         "nodes": [
             {
                 "id": node.id,
@@ -397,4 +487,10 @@ def deserialize(data: dict) -> Structure:
         )
         for entry in data["nodes"]
     )
-    return Structure(nodes=nodes, step_count=data["step_count"], seed=data["seed"])
+    return Structure(
+        nodes=nodes,
+        step_count=data["step_count"],
+        seed=data["seed"],
+        generation=data.get("generation", 1),
+        parent_seed=data.get("parent_seed"),
+    )

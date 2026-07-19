@@ -1,9 +1,12 @@
 """Epiphyte — a Discord bot that grows a single plant in one channel.
 
 Phase 6 (its own life): the plant now lives in the channel instead of being
-summoned on demand. A recurring metabolic tick — the plant's heartbeat — grows
-every plant one step and re-renders a single living message the bot keeps updated
-in place, so the plant visibly grows and withers over days without any command.
+summoned on demand. A recurring metabolic tick — the plant's heartbeat — advances
+every plant one life-step and re-renders a single living message the bot keeps
+updated in place, so the plant visibly grows and withers over days without any
+command. Phase 8 closes the loop: a plant that dies of a lasting drought lingers a
+few ticks as a bare grey body, then a mutated successor germinates in the same
+message — the same message showing death and rebirth, generation after generation.
 
 Each guild binds a channel with ``/epiphyte-channel``; every message there
 passively waters the plant, and silence lets its moisture decay over days. The
@@ -55,6 +58,10 @@ GUILD_ENV = "EPIPHYTE_GUILD_ID"
 #: edits too often. Adjustable during Phase 8 calibration.
 TICK_INTERVAL_SECONDS = 60 * 60  # 1 hour
 
+#: How many ticks a fully dead plant lingers as a bare grey body before a
+#: successor germinates in its place — a short, visible dead phase.
+DEAD_PHASE_TICKS = 3
+
 #: Nord-themed embed colour per growth stage (driest to lushest).
 STAGE_COLORS: dict[Stage, int] = {
     Stage.WITHERED: 0x5E4A3B,  # rooted stem brown
@@ -62,6 +69,9 @@ STAGE_COLORS: dict[Stage, int] = {
     Stage.HEALTHY: 0xA3BE8C,   # leaf green
     Stage.THRIVING: 0x88C0D0,  # bud accent
 }
+
+#: Nord dark grey for the embed of a dead plant.
+DEAD_EMBED_COLOR = 0x4C566A
 
 #: Human-readable label per growth stage.
 STAGE_LABELS: dict[Stage, str] = {
@@ -88,12 +98,24 @@ class WateringWindow:
     count: int
 
 
-def build_plant_embed(value: float, plant_stage: Stage, step_count: int) -> discord.Embed:
-    """Build the Nord-themed embed that frames the plant image and its values."""
-    embed = discord.Embed(title="🌱 The plant", color=STAGE_COLORS[plant_stage])
-    embed.add_field(name="Moisture", value=f"{value:.0%}")
-    embed.add_field(name="Stage", value=STAGE_LABELS[plant_stage])
-    embed.add_field(name="Age", value=f"{step_count} steps")
+def build_plant_embed(moisture_value: float, plant: structure.Structure) -> discord.Embed:
+    """Build the Nord-themed embed framing the plant image, values and lineage.
+
+    A living plant shows its moisture, stage and age; a fully dead one shows that
+    it has died and a successor is coming. Both show the generation, so the plant's
+    lineage is visible as it dies and is reborn.
+    """
+    if structure.is_dead(plant):
+        embed = discord.Embed(title="🥀 The plant has died", color=DEAD_EMBED_COLOR)
+        embed.add_field(name="Status", value="A new seed will sprout soon")
+        embed.add_field(name="Lived", value=f"{plant.step_count} steps")
+    else:
+        plant_stage = moisture.stage(moisture_value)
+        embed = discord.Embed(title="🌱 The plant", color=STAGE_COLORS[plant_stage])
+        embed.add_field(name="Moisture", value=f"{moisture_value:.0%}")
+        embed.add_field(name="Stage", value=STAGE_LABELS[plant_stage])
+        embed.add_field(name="Age", value=f"{plant.step_count} steps")
+    embed.add_field(name="Generation", value=str(plant.generation))
     embed.set_image(url=f"attachment://{PLANT_IMAGE_FILENAME}")
     return embed
 
@@ -185,6 +207,7 @@ class EpiphyteClient(discord.Client):
                     last_update=now,
                     channel_id=channel_id,
                     message_id=None,
+                    dead_ticks=0,
                 )
             )
         elif state.channel_id != channel_id:
@@ -211,19 +234,33 @@ class EpiphyteClient(discord.Client):
         current = moisture.decay(state.moisture, now - state.last_update)
         self._store(replace(state, moisture=moisture.water(current, amount), last_update=now))
 
-    def grow_one_step(self, guild_id: int, now: float) -> None:
-        """Advance one guild's plant by a single growth step (the tick's core).
+    def advance_life(self, guild_id: int, now: float) -> None:
+        """Advance one guild's plant by a single life-step (the tick's core).
 
-        Decays moisture to ``now``, grows exactly one step gated by that moisture —
-        high moisture grows briskly, a dry plant barely at all — and persists. The
-        growth itself is the pure logic in :mod:`structure`; this only reads the
-        clock and stores the result.
+        Decays moisture to ``now``, then either grows the plant one step (gated by
+        that moisture), or — if it is dead — counts down a brief dead phase and
+        germinates a mutated successor when it elapses. All the growth, death and
+        heredity is the pure logic in :mod:`structure`; this only reads the clock,
+        runs the small state machine and stores the result.
         """
         state = self._states[guild_id]
         current = moisture.decay(state.moisture, now - state.last_update)
+
+        if structure.is_dead(state.structure):
+            dead_ticks = state.dead_ticks + 1
+            if dead_ticks >= DEAD_PHASE_TICKS:
+                successor = structure.germinate_successor(state.structure)
+                self._store(
+                    replace(state, structure=successor, moisture=current,
+                            last_update=now, dead_ticks=0)
+                )
+            else:
+                self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
+            return
+
         genome = structure.genome_from_seed(state.structure.seed)
         grown = structure.grow(state.structure, genome, current, 1)
-        self._store(replace(state, structure=grown, moisture=current, last_update=now))
+        self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
 
     async def on_message(self, message: discord.Message) -> None:
         """Water the plant when a message arrives in the guild's bound channel.
@@ -244,17 +281,19 @@ class EpiphyteClient(discord.Client):
     # --- the metabolic tick --------------------------------------------------
 
     async def metabolic_tick(self) -> None:
-        """The plant's heartbeat: grow every plant one step and refresh its message.
+        """The plant's heartbeat: advance every plant one life-step and refresh it.
 
         Runs at a fixed real interval while the bot is live. Each guild is handled
-        independently, so one unreachable channel never stops the others.
+        independently, so one unreachable channel never stops the others. Growth,
+        death and rebirth all flow through here, so the living message shows the
+        whole life cycle without any command.
         """
         now = time.time()
         for guild_id, state in list(self._states.items()):
             if state.channel_id is None:
                 continue
             try:
-                self.grow_one_step(guild_id, now)
+                self.advance_life(guild_id, now)
                 await self.refresh_channel_message(guild_id)
             except Exception:  # noqa: BLE001 — one guild must not break the rest
                 _log.exception("Metabolic tick failed for guild %s.", guild_id)
@@ -283,9 +322,7 @@ class EpiphyteClient(discord.Client):
 
     def _embed_for(self, state: storage.GuildState) -> discord.Embed:
         """Build the living message's embed from a guild's current stored state."""
-        return build_plant_embed(
-            state.moisture, moisture.stage(state.moisture), state.structure.step_count
-        )
+        return build_plant_embed(state.moisture, state.structure)
 
     async def refresh_channel_message(self, guild_id: int) -> None:
         """Edit the living plant message in place, posting it if it is missing.
@@ -397,9 +434,7 @@ async def plant(interaction: discord.Interaction) -> None:
     display_moisture = moisture.decay(state.moisture, now - state.last_update)
     genome = structure.genome_from_seed(state.structure.seed)
     buffer = await asyncio.to_thread(render.render, state.structure, display_moisture, genome)
-    embed = build_plant_embed(
-        display_moisture, moisture.stage(display_moisture), state.structure.step_count
-    )
+    embed = build_plant_embed(display_moisture, state.structure)
     await interaction.response.send_message(
         embed=embed,
         file=discord.File(buffer, filename=PLANT_IMAGE_FILENAME),

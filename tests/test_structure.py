@@ -6,11 +6,16 @@ biography: drought kills wood from the outside in, dead wood is a permanent scar
 that survives recovery, and the accumulated body never shrinks.
 """
 
+import dataclasses
+
 from structure import (
     NodeState,
     genome_from_seed,
     germinate,
+    germinate_successor,
     grow,
+    is_dead,
+    mutate,
     serialize,
 )
 
@@ -134,8 +139,9 @@ def test_serialize_round_trips() -> None:
 
 # --- Phase 7: dieback and the biography --------------------------------------
 
-#: A moisture deep below the dieback threshold — a real, killing drought.
-DROUGHT = 0.02
+#: A moderate drought — below the dieback threshold, but only nibbling the crown
+#: (partial dieback with survivors), not the deep silence that kills the whole plant.
+DROUGHT = 0.05
 
 
 def test_drought_kills_wood_from_outside_in() -> None:
@@ -225,12 +231,100 @@ def test_dieback_is_chunk_invariant() -> None:
 
 def test_partial_drought_recovers_with_living_tips() -> None:
     """A partial drought leaves both a scar and living tips that regrow on rain."""
-    seed = 35
+    seed = 30
     genome = genome_from_seed(seed)
-    withered = grow(_grown(seed, 0.7, 60), genome, DROUGHT, 12)
+    withered = grow(_grown(seed, 0.7, 60), genome, DROUGHT, 15)
 
     assert _count_state(withered, NodeState.DEAD) > 0, "some wood should have died"
     assert _count_state(withered, NodeState.TIP) > 0, "some tips should survive"
 
     recovered = grow(withered, genome, 0.9, 40)
     assert len(recovered.nodes) > len(withered.nodes)  # new growth returns
+
+
+# --- Phase 8: death, seed and lineage ----------------------------------------
+
+#: A deep, unbroken silence that drives vitality to zero and kills the whole plant.
+DEAD_SILENCE = 0.0
+
+
+def test_mutate_is_deterministic_and_different() -> None:
+    """A mutation is reproducible and always yields a different seed."""
+    for seed in (0, 1, 42, 123456789, (1 << 62) + 7):
+        assert mutate(seed) == mutate(seed)
+        assert mutate(seed) != seed
+
+
+def test_mutate_resembles_the_parent() -> None:
+    """A single-gene mutation changes exactly one genome trait; the rest carry over."""
+    for seed in (42, 777, 20260101):
+        parent = genome_from_seed(seed)
+        child = genome_from_seed(mutate(seed))
+        differing = sum(
+            1
+            for field in dataclasses.fields(parent)
+            if getattr(parent, field.name) != getattr(child, field.name)
+        )
+        assert differing == 1
+
+
+def test_is_dead_recognises_a_fully_dead_body() -> None:
+    """``is_dead`` is true only when every node is dead."""
+    assert not is_dead(germinate(5))  # a fresh germ is alive
+    assert not is_dead(_grown(5, 0.7, 40))  # a growing plant is alive
+    dead = grow(_grown(5, 0.7, 60), genome_from_seed(5), DEAD_SILENCE, 300)
+    assert is_dead(dead)
+
+
+def test_sustained_silence_kills_the_whole_plant() -> None:
+    """A partial drought spares the base; an unrelenting one kills it too."""
+    seed = 42
+    genome = genome_from_seed(seed)
+    healthy = _grown(seed, 0.7, 60)
+
+    partial = grow(healthy, genome, DROUGHT, 20)
+    assert not is_dead(partial)  # Phase 7: the base survives a moderate drought
+    assert partial.nodes[0].state is not NodeState.DEAD
+
+    fully = grow(healthy, genome, DEAD_SILENCE, 300)
+    assert is_dead(fully)  # Phase 8: deep silence reaches even the germ
+    assert fully.nodes[0].state is NodeState.DEAD
+
+
+def test_dormant_germ_survives_drought() -> None:
+    """A germ that never grew lies dormant as a seed; drought cannot kill it."""
+    germ = germinate(999)
+    parched = grow(germ, genome_from_seed(999), DEAD_SILENCE, 200)
+    assert not is_dead(parched)
+    assert len(parched.nodes) == 1  # still just the waiting seed
+
+
+def test_germinate_successor_is_a_mutated_child() -> None:
+    """A successor is a fresh germ from a mutated seed, one generation on."""
+    genome = genome_from_seed(42)
+    dead = grow(_grown(42, 0.7, 60), genome, DEAD_SILENCE, 300)
+    assert is_dead(dead)
+
+    child = germinate_successor(dead)
+    assert len(child.nodes) == 1  # a fresh single germ
+    assert child.nodes[0].state is NodeState.TIP
+    assert child.step_count == 0
+    assert child.seed == mutate(dead.seed)
+    assert child.seed != dead.seed
+    assert child.parent_seed == dead.seed
+    assert child.generation == dead.generation + 1
+
+
+def test_generation_climbs_across_a_lineage() -> None:
+    """Each successor carries the lineage forward with a rising generation."""
+    plant = germinate(7)
+    assert plant.generation == 1 and plant.parent_seed is None
+
+    seeds = [plant.seed]
+    for expected_generation in (2, 3, 4):
+        plant = germinate_successor(plant)
+        assert plant.generation == expected_generation
+        assert plant.parent_seed == seeds[-1]
+        seeds.append(plant.seed)
+
+    assert len(set(seeds)) == len(seeds)  # every generation is its own individual
