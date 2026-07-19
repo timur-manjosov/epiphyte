@@ -22,15 +22,15 @@ The core discipline is a clean split between **pure logic** and **I/O**.
 | File | Role | Depends on |
 |---|---|---|
 | `moisture.py` | **Pure logic** — moisture decay and the anti-farming curve. | nothing but the stdlib |
-| `lsystem.py` | **Pure logic** — L-system expansion and turtle interpretation into geometry. | `moisture` only |
-| `render.py` | **I/O** — turns geometry into a PNG. | Pillow |
+| `structure.py` | **Pure logic** — the plant's genome and its accumulating, seeded growth. | nothing but the stdlib |
+| `render.py` | **I/O** — draws a structure into a PNG. | Pillow |
 | `storage.py` | **I/O** — SQLite persistence of per-guild state. | stdlib `sqlite3` |
 | `bot.py` | **Thin adapter** — Discord client, slash commands, events; wires the above together. | discord.py |
 | `tests/` | pytest suite for the **pure logic only**. | pytest |
 
 ### Pure logic ⟷ I/O — the heart of the design
 
-- **Pure functions** (`moisture.py`, `lsystem.py`) are deterministic, have no
+- **Pure functions** (`moisture.py`, `structure.py`) are deterministic, have no
   side effects, and contain **no `import discord`** and no Pillow. Same input,
   same output. They never read the clock — elapsed time and timestamps are
   passed in.

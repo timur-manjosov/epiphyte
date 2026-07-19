@@ -1,39 +1,53 @@
-"""Epiphyte — a Discord bot that renders a single plant in one channel.
+"""Epiphyte — a Discord bot that grows a single plant in one channel.
 
-Phase 3 (fairness & durability): each guild picks a watering channel with
-``/epiphyte-channel``; every message there passively waters the plant, and
-silence lets it decay over days. Repeated watering by the same person yields
-diminishing returns, so one flooder cannot keep the plant alive while genuine
-activity from several people can. All state is persisted in SQLite, so a restart
-does not change the plant.
+Phase 5 (the body): the plant is no longer a fixed shape read off the current
+moisture. It is a persistent, accumulating structure that grows in discrete
+steps. Each guild picks a watering channel with ``/epiphyte-channel``; every
+message there passively waters the plant, and silence lets its moisture decay
+over days. ``/plant`` advances growth by however many whole time-steps have
+elapsed since it last grew — gated by the current moisture, so a dry plant barely
+grows — then persists and renders the accumulated body. (The autonomous tick that
+grows the plant without any command arrives in Phase 6.)
 
-This module is the thin Discord adapter from the architecture: client, commands,
-event and sync wiring. The interesting computation lives in the pure ``moisture``
-and ``lsystem`` modules; ``render`` isolates the Pillow drawing and ``storage``
-isolates the SQLite persistence.
+Growth per unit time is capped by moisture, and moisture itself is subject to the
+per-person diminishing returns from Phase 3, so spam cannot farm a big tree.
+
+This module is the thin Discord adapter: client, commands, event and sync wiring,
+and the orchestration that reads the clock and decides how many steps are due.
+The interesting computation lives in the pure ``moisture`` and ``structure``
+modules; ``render`` isolates the Pillow drawing and ``storage`` the SQLite
+persistence.
 """
 
 from __future__ import annotations
 
 import asyncio
-import io
 import os
+import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import discord
 from discord import app_commands
 
-import lsystem
 import moisture
 import render
 import storage
+import structure
 from moisture import Stage
 
 #: Name of the required environment variable holding the bot token.
 TOKEN_ENV = "EPIPHYTE_TOKEN"
 #: Name of the optional environment variable holding the test guild id.
 GUILD_ENV = "EPIPHYTE_GUILD_ID"
+
+#: Real time one growth step represents. Growth is a slow accumulation: a full,
+#: bushy tree is the result of weeks of sustained health, not a single busy hour.
+GROWTH_STEP_SECONDS = 30 * 60  # 30 minutes
+#: Upper bound on steps applied in one update, so a long downtime cannot trigger a
+#: huge catch-up. The backlog would grow almost nothing anyway — moisture has
+#: decayed toward zero over the gap — so discarding it changes nothing visible.
+MAX_GROWTH_STEPS_PER_UPDATE = 240
 
 #: Nord-themed embed colour per growth stage (driest to lushest).
 STAGE_COLORS: dict[Stage, int] = {
@@ -68,24 +82,12 @@ class WateringWindow:
     count: int
 
 
-def render_plant_png(value: float) -> io.BytesIO:
-    """Run the full pipeline for a moisture value and return a PNG buffer.
-
-    Chains moisture -> stage -> depth -> expand -> interpret -> render. This is
-    synchronous (the Pillow drawing), so callers should run it in a thread to
-    keep the event loop responsive.
-    """
-    depth = lsystem.depth_for_stage(moisture.stage(value))
-    commands = lsystem.expand(lsystem.PLANT_AXIOM, lsystem.PLANT_RULES, depth)
-    segments = lsystem.interpret(commands, lsystem.PLANT_ANGLE, lsystem.PLANT_STEP)
-    return render.render(segments)
-
-
-def build_plant_embed(value: float, plant_stage: Stage) -> discord.Embed:
+def build_plant_embed(value: float, plant_stage: Stage, step_count: int) -> discord.Embed:
     """Build the Nord-themed embed that frames the plant image and its values."""
     embed = discord.Embed(title="🌱 The plant", color=STAGE_COLORS[plant_stage])
     embed.add_field(name="Moisture", value=f"{value:.0%}")
     embed.add_field(name="Stage", value=STAGE_LABELS[plant_stage])
+    embed.add_field(name="Age", value=f"{step_count} steps")
     embed.set_image(url=f"attachment://{PLANT_IMAGE_FILENAME}")
     return embed
 
@@ -139,7 +141,7 @@ class EpiphyteClient(discord.Client):
         """Return a guild's current moisture without mutating its state.
 
         Decays the stored moisture from its ``last_update`` up to ``now``. A
-        guild that has never been watered is fully withered at ``0.0``.
+        guild with no plant yet is fully withered at ``0.0``.
         """
         state = self._states.get(guild_id)
         if state is None:
@@ -147,9 +149,27 @@ class EpiphyteClient(discord.Client):
         return moisture.decay(state.moisture, now - state.last_update)
 
     def set_channel(self, guild_id: int, channel_id: int, now: float) -> None:
-        """Set the guild's watering channel, preserving the current moisture."""
-        current = self.current_moisture(guild_id, now)
-        self._store(storage.GuildState(guild_id, current, now, channel_id))
+        """Set the guild's watering channel.
+
+        On a guild's first contact this germinates a fresh plant from a new random
+        seed — the seed is what makes each server's plant an individual. If the
+        guild already has a plant, only its channel changes.
+        """
+        state = self._states.get(guild_id)
+        if state is None:
+            seed = random.getrandbits(63)
+            self._store(
+                storage.GuildState(
+                    guild_id=guild_id,
+                    structure=structure.germinate(seed),
+                    moisture=moisture.MIN_MOISTURE,
+                    last_update=now,
+                    last_growth=now,
+                    channel_id=channel_id,
+                )
+            )
+        else:
+            self._store(replace(state, channel_id=channel_id))
 
     def water_plant(self, guild_id: int, user_id: int, now: float) -> None:
         """Water a guild's plant with diminishing returns for the author.
@@ -157,23 +177,51 @@ class EpiphyteClient(discord.Client):
         The author's repeated waterings within their window add progressively
         less (see :func:`moisture.next_watering`), so a single person cannot farm
         the plant. Decays to ``now``, adds the discounted amount, restamps and
-        persists.
+        persists. Growth is not advanced here — only ``/plant`` grows the plant in
+        this phase.
         """
+        state = self._states.get(guild_id)
+        if state is None:
+            return  # no plant yet; watering only happens once a channel is set
+
         window = self._windows.get((guild_id, user_id))
         start = window.window_start if window is not None else None
         count = window.count if window is not None else 0
         amount, new_start, new_count = moisture.next_watering(start, count, now)
         self._windows[(guild_id, user_id)] = WateringWindow(new_start, new_count)
 
-        current = self.current_moisture(guild_id, now)
-        self._store(
-            storage.GuildState(
-                guild_id=guild_id,
-                moisture=moisture.water(current, amount),
-                last_update=now,
-                channel_id=self.channel_id(guild_id),
-            )
+        current = moisture.decay(state.moisture, now - state.last_update)
+        self._store(replace(state, moisture=moisture.water(current, amount), last_update=now))
+
+    def advance_plant(self, guild_id: int, now: float) -> storage.GuildState:
+        """Decay moisture and apply any growth steps that have come due.
+
+        Determines how many whole :data:`GROWTH_STEP_SECONDS` have elapsed since
+        the plant last grew, grows that many steps gated by the current moisture,
+        persists the new state and returns it. Chunk-invariant growth means the
+        outcome does not depend on how often ``/plant`` is called, only on elapsed
+        time and moisture.
+        """
+        state = self._states[guild_id]
+        current = moisture.decay(state.moisture, now - state.last_update)
+
+        raw_steps = int((now - state.last_growth) // GROWTH_STEP_SECONDS)
+        steps = min(raw_steps, MAX_GROWTH_STEPS_PER_UPDATE)
+        if steps > 0:
+            genome = structure.genome_from_seed(state.structure.seed)
+            grown = structure.grow(state.structure, genome, current, steps)
+            # Advance the growth clock by the steps consumed; drop any downtime
+            # backlog beyond the cap (it would have grown almost nothing anyway).
+            last_growth = now if raw_steps > steps else state.last_growth + steps * GROWTH_STEP_SECONDS
+        else:
+            grown = state.structure
+            last_growth = state.last_growth
+
+        new_state = replace(
+            state, structure=grown, moisture=current, last_update=now, last_growth=last_growth
         )
+        self._store(new_state)
+        return new_state
 
     async def on_message(self, message: discord.Message) -> None:
         """Water the plant when a message arrives in the guild's watering channel.
@@ -197,7 +245,7 @@ client = EpiphyteClient()
 
 @client.tree.command(name="plant", description="Show the current state of the plant.")
 async def plant(interaction: discord.Interaction) -> None:
-    """Render the current plant as an image and send it in a Nord-themed embed."""
+    """Advance growth, then render the plant as an image in a Nord-themed embed."""
     if interaction.guild_id is None:
         await interaction.response.send_message(
             "Epiphyte only grows on servers, not in direct messages.",
@@ -211,10 +259,11 @@ async def plant(interaction: discord.Interaction) -> None:
             ephemeral=True,
         )
         return
-    value = client.current_moisture(interaction.guild_id, time.time())
-    png = await asyncio.to_thread(render_plant_png, value)
+
+    state = client.advance_plant(interaction.guild_id, time.time())
+    png = await asyncio.to_thread(render.render, state.structure)
     file = discord.File(png, filename=PLANT_IMAGE_FILENAME)
-    embed = build_plant_embed(value, moisture.stage(value))
+    embed = build_plant_embed(state.moisture, moisture.stage(state.moisture), state.structure.step_count)
     await interaction.response.send_message(embed=embed, file=file)
 
 

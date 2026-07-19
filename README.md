@@ -7,7 +7,7 @@ not a utility bot — it is a small art project with an honest side effect: the
 plant shows, unvarnished, how alive a channel really is.
 
 <p align="center">
-  <img src="assets/growth.gif" alt="The plant growing and withering" width="360">
+  <img src="assets/growth.gif" alt="A plant accumulating from a sprout into a branching tree" width="320">
 </p>
 
 ## What it is, and why
@@ -22,26 +22,32 @@ alive on their own — only genuine activity from several people can. The plant 
 a mirror, not a scoreboard.
 
 Every server gets its own isolated plant — there is no shared, cross-server
-world.
+world. And no two are alike: each plant grows from its own seed into a body that
+accumulates over its whole life, so the same moisture never means the same
+shape. A plant *is* its history.
 
 ## How it works
 
 - **Watering** — each message in the chosen channel adds a little moisture.
 - **Withering** — moisture decays exponentially; left in silence, the plant
   falls from thriving to withered over roughly three days.
-- **Growth** — moisture maps to a growth stage, and the stage drives an
-  [L-system](https://en.wikipedia.org/wiki/L-system) that is turtle-interpreted
-  and rendered to an image. More moisture → a deeper, bushier plant.
+- **Growth** — the plant is a persistent, growing body, not a snapshot. Healthy
+  time adds discrete growth steps that extend and branch it, and what grows
+  *stays*. Moisture sets the pace — a dry plant barely grows — so a full tree is
+  the reward of weeks of sustained activity, not a single busy evening.
+- **Individuality** — every server's plant grows from its own random seed: a
+  genome fixing its branching angles, bushiness and vigour, so no two servers
+  ever grow the same plant.
 - **Fairness** — repeated watering by the same person within a window yields
-  progressively less, so no one can farm the plant by flooding.
+  progressively less, and growth is gated by moisture, so no one can farm a big
+  tree by flooding.
 - **Privacy** — the bot only needs to know *that* a message arrived, never
   *what* it said. It reads no message content and requests **no privileged
   gateway intents**.
 
-The four growth stages, driest to lushest — `Withered → Dry → Healthy →
-Thriving`:
+Same rules, different seeds — four servers' mature plants, each an individual:
 
-![The four growth stages, from withered to thriving](assets/stages.png)
+![Four different mature plants grown from different seeds](assets/individuals.png)
 
 ## Quickstart
 
@@ -95,7 +101,7 @@ directory to remember each server's plant across restarts.
 1. **`/epiphyte-channel #channel`** — choose the channel that waters the plant.
    Until this is set, messages are ignored.
 2. Chat in that channel — every message quietly waters the plant.
-3. **`/plant`** — see the plant as it stands right now.
+3. **`/plant`** — render the plant, growing it by whatever steps have come due.
 
 ## Configuration
 
@@ -112,12 +118,12 @@ lives in the code or repository.
 | Command | What it does |
 |---|---|
 | `/epiphyte-channel #channel` | Set the channel whose messages water the plant. |
-| `/plant` | Render and show the plant's current state (image + moisture + stage). |
+| `/plant` | Advance growth to now, then render the plant (image + moisture + stage + age). |
 
 ## Development
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`) and
-the L-system expansion and turtle interpreter (`lsystem.py`) — is tested with
+the plant's genome and accumulating growth (`structure.py`) — is tested with
 pytest and depends on neither Discord nor Pillow. Rendering (`render.py`) is
 isolated Pillow I/O, and persistence (`storage.py`) is isolated SQLite I/O.
 
