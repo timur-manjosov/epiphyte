@@ -22,7 +22,7 @@ The core discipline is a clean split between **pure logic** and **I/O**.
 | File | Role | Depends on |
 |---|---|---|
 | `moisture.py` | **Pure logic** — moisture decay and the anti-farming curve. | nothing but the stdlib |
-| `structure.py` | **Pure logic** — the plant's genome, its accumulating seeded growth, and drought dieback. | nothing but the stdlib |
+| `structure.py` | **Pure logic** — the plant's genome, its accumulating seeded growth, drought dieback, and the death/reseed lifecycle. | nothing but the stdlib |
 | `render.py` | **I/O** — draws a structure into a PNG, with vitality modulating foliage, colour and posture. | Pillow |
 | `storage.py` | **I/O** — SQLite persistence of per-guild state. | stdlib `sqlite3` |
 | `bot.py` | **Thin adapter** — Discord client, slash commands, events, and the metabolic tick that grows and re-renders each plant; wires the above together. | discord.py, APScheduler |

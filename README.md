@@ -46,9 +46,14 @@ shape. A plant *is* its history.
   colour and posture follow the mood of the moment — but growth and death are
   permanent. A drought that kills a branch leaves a bare, weathered scar that
   stays legible long after the leaves, and the rest of the plant, have recovered.
+- **Death and lineage** — abandon a channel for long enough and even the inner
+  wood dies: the plant dies, lingers a while as a bare grey skeleton, then a new
+  seed sprouts in its place. That seed is a mutation of the one before, so each
+  generation resembles its parent yet is its own individual. There is no final
+  state — the line simply continues.
 - **Individuality** — every server's plant grows from its own random seed: a
   genome fixing its branching angles, bushiness, vigour and foliage, so no two
-  servers ever grow the same plant.
+  servers ever grow the same plant, and a seed carries those traits to its heirs.
 - **Fairness** — repeated watering by the same person within a window yields
   progressively less, and growth is gated by moisture, so no one can farm a big
   tree by flooding.
@@ -64,6 +69,11 @@ Vitality plays over a body that keeps the record — lush, then a drought, then
 recovered. The leaves return, but the dead branch the drought cost stays as a scar:
 
 ![A plant lush, then parched by a drought, then recovered while a dead branch remains as a scar](assets/biography.png)
+
+And when neglect is total, the plant dies — then a mutated successor grows in its
+place, a recognisable but distinct next generation:
+
+![A plant thriving, then dead and grey, then its grown successor resembling it](assets/lineage.png)
 
 ## Quickstart
 
@@ -142,10 +152,9 @@ lives in the code or repository.
 ## Development
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`) and
-the plant's genome, accumulating growth and drought dieback (`structure.py`) — is
-tested with pytest and depends on neither Discord nor Pillow. Rendering
-(`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated
-SQLite I/O.
+the plant's genome, growth, dieback and lifecycle (`structure.py`) — is tested
+with pytest and depends on neither Discord nor Pillow. Rendering (`render.py`) is
+isolated Pillow I/O, and persistence (`storage.py`) is isolated SQLite I/O.
 
 ```bash
 pip install -r requirements-dev.txt
