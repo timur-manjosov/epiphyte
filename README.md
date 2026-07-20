@@ -24,7 +24,9 @@ a mirror, not a scoreboard.
 Every server gets its own isolated plant — there is no shared, cross-server
 world. And no two are alike: each plant grows from its own seed into a body that
 accumulates over its whole life, so the same moisture never means the same
-shape. A plant *is* its history.
+shape. A plant *is* its history — and a channel that stays alive for months will
+see things a busy weekend can never buy: a bloom, a seed, eventually an epiphyte
+of its own.
 
 ## How it works
 
@@ -46,14 +48,26 @@ shape. A plant *is* its history.
   colour and posture follow the mood of the moment — but growth and death are
   permanent. A drought that kills a branch leaves a bare, weathered scar that
   stays legible long after the leaves, and the rest of the plant, have recovered.
+- **Flowering** — kept genuinely healthy for weeks on end, the plant banks that
+  health and eventually comes into bloom, in a colour its own genome decides.
+  Flowering then spends the very reserve it took to get there, so the bloom fades
+  by itself and the next one has to be earned again: a season, not a switch. A
+  bloom that lasts long enough sets seed, and those pale seed heads stay on the
+  body long after the flowers are gone.
+- **An epiphyte of its own** — a tree that has grown very old and very large and
+  flowered several times over can take on the thing this project is named after: a
+  second, far smaller plant that settles on one of its old limbs and grows there,
+  with a seed and a dwarfed genome of its own. It cannot be hurried.
 - **Death and lineage** — abandon a channel for long enough and even the inner
   wood dies: the plant dies, lingers a while as a bare grey skeleton, then a new
   seed sprouts in its place. That seed is a mutation of the one before, so each
-  generation resembles its parent yet is its own individual. There is no final
-  state — the line simply continues.
+  generation resembles its parent yet is its own individual, and a plant that
+  lived to set seed hands on a richer line. There is no final state — the line
+  simply continues.
 - **Individuality** — every server's plant grows from its own random seed: a
-  genome fixing its branching angles, bushiness, vigour and foliage, so no two
-  servers ever grow the same plant, and a seed carries those traits to its heirs.
+  genome fixing its branching angles, bushiness, vigour, foliage and the colour it
+  flowers in, so no two servers ever grow the same plant, and a seed carries those
+  traits to its heirs.
 - **Fairness** — repeated watering by the same person within a window yields
   progressively less, and growth is gated by moisture, so no one can farm a big
   tree by flooding.
@@ -74,6 +88,17 @@ And when neglect is total, the plant dies — then a mutated successor grows in 
 place, a recognisable but distinct next generation:
 
 ![A plant thriving, then dead and grey, then its grown successor resembling it](assets/lineage.png)
+
+At the other end of a life, the rare states have to be earned. Weeks of real health
+bring the plant into bloom; the flowering spends that health and fades again, but
+the seed it set stays on the bare branches:
+
+![A tended plant, the same plant in blue blossom, and the same plant parched with only pale seed heads left](assets/bloom.png)
+
+And the rarest of them, on a tree grown old and large and flowered many times over:
+its own epiphyte, a second little organism living on one of its limbs.
+
+![An old spreading tree carrying a small blue-green epiphyte, and a close-up of that epiphyte on its branch](assets/epiphyte.png)
 
 ## Quickstart
 
@@ -152,8 +177,8 @@ lives in the code or repository.
 ## Development
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`) and
-the plant's genome, growth, dieback and lifecycle (`structure.py`) — is tested
-with pytest and depends on neither Discord nor Pillow. Rendering (`render.py`) is
+the plant's genome, growth, dieback, lifecycle and milestones (`structure.py`) —
+is tested with pytest and depends on neither Discord nor Pillow. Rendering (`render.py`) is
 isolated Pillow I/O, and persistence (`storage.py`) is isolated SQLite I/O.
 
 ```bash

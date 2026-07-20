@@ -12,6 +12,12 @@ run from lush teal-green when wet to a parched, desaturated brown when dry, and
 the young ends droop under drought. Dead wood is always drawn bare and weathered
 grey, so a healed drought's scar stays visible however lush the rest becomes.
 
+On top of that come the rare states a plant has to earn. In bloom it carries
+blossoms in the colour its own genome flowers in; once it has set seed its tips
+keep pale seed heads, which survive the drought that takes the blossoms; and a
+tree old enough to have taken on an epiphyte carries that second little plant,
+drawn as the independent structure it is, on the limb it settled on.
+
 Stem thickness follows the pipe model: a node's width is derived from how many
 tips (terminal endpoints) its subtree carries, so the trunk that feeds the whole
 crown is thick and the fine twigs are thin. Colour runs along height, from rooted
@@ -23,10 +29,18 @@ from __future__ import annotations
 import io
 import math
 import random
+from collections.abc import Callable
 
 from PIL import Image, ImageDraw
 
-from structure import Genome, Node, NodeState, Structure
+from structure import (
+    Genome,
+    NodeState,
+    Structure,
+    epiphyte_genome,
+    has_seeded,
+    is_blooming,
+)
 
 # Nord palette (RGB), matching the table in CLAUDE.md.
 BACKGROUND = (46, 52, 64)    # #2E3440
@@ -43,6 +57,24 @@ DEAD_WOOD = (150, 144, 134)
 PARCHED = (120, 104, 82)
 #: How far toward PARCHED fully-dry living tissue is tinted (0..1).
 PARCH_STRENGTH = 0.72
+
+#: Nord accents the blossom colour is drawn from — the plant's bloom gene picks a
+#: point along this ramp, so each individual flowers in a shade of its own. Ordered
+#: frost → purple → red → orange → yellow, which keeps every blend on the palette.
+BLOOM_RAMP: tuple[tuple[int, int, int], ...] = (
+    (136, 192, 208),  # #88C0D0
+    (180, 142, 173),  # #B48EAD
+    (191, 97, 106),   # #BF616A
+    (208, 135, 112),  # #D08770
+    (235, 203, 139),  # #EBCB8B
+)
+#: Pale Nord snow of a seed head, and the brightness a blossom's eye is lifted to.
+SEED_HEAD = (216, 222, 233)  # #D8DEE9
+BLOSSOM_EYE = (236, 239, 244)  # #ECEFF4
+#: Foliage of an epiphyte: the Nord frost accent. A second organism gets a colour of
+#: its own, cooler and brighter than both the host's leaves and its stems, so it
+#: reads as another species rather than as more of its host's crown.
+EPIPHYTE_LEAF = ACCENT
 
 #: Final image size in pixels.
 WIDTH = 480
@@ -65,8 +97,18 @@ _DROOP_MAX = 58.0 * SUPERSAMPLE
 #: Base leaf radius (supersampled px) and how many leaves a full, dense tip grows.
 _LEAF_RADIUS = 4.6 * SUPERSAMPLE
 _LEAF_CLUSTER_MAX = 7
+#: Base radius of a blossom's petals and of a single seed in a seed head.
+_BLOSSOM_RADIUS = 3.4 * SUPERSAMPLE
+_SEED_RADIUS = 1.7 * SUPERSAMPLE
+#: Petals per blossom, and seeds per seed head.
+_PETALS = 5
+_SEEDS_PER_HEAD = 3
+#: Thickest stem of an epiphyte: it is a passenger, never a second trunk.
+_EPIPHYTE_MAX_STEM = 3.0 * SUPERSAMPLE
 
 Color = tuple[int, int, int]
+#: One drawable stem: start and end in pixels, its colour and its width.
+Segment = tuple[tuple[float, float], tuple[float, float], Color, float]
 
 
 def _lerp_color(low: Color, high: Color, t: float) -> Color:
@@ -147,6 +189,7 @@ def _draw_leaves(
     vitality: float,
     genome: Genome,
     node_id: int,
+    leaf_color: Color = LEAF,
 ) -> None:
     """Draw a leaf cluster at a living tip; size and count scale with vitality.
 
@@ -159,7 +202,7 @@ def _draw_leaves(
         return
     rng = random.Random(f"leaf:{node_id}")
     base_r = _LEAF_RADIUS * genome.leaf_size * (0.55 + 0.45 * vitality)
-    color = _parch(LEAF, vitality)
+    color = _parch(leaf_color, vitality)
     cx, cy = tip_px
     for _ in range(count):
         angle = rng.uniform(0.0, 2.0 * math.pi)
@@ -170,6 +213,174 @@ def _draw_leaves(
         draw.ellipse((lx - r, ly - r, lx + r, ly + r), fill=color)
 
 
+def _bloom_color(genome: Genome) -> Color:
+    """The blossom colour this genome flowers in: a point along :data:`BLOOM_RAMP`."""
+    position = max(0.0, min(1.0, genome.bloom_hue)) * (len(BLOOM_RAMP) - 1)
+    stop = min(int(position), len(BLOOM_RAMP) - 2)
+    return _lerp_color(BLOOM_RAMP[stop], BLOOM_RAMP[stop + 1], position - stop)
+
+
+def _draw_blossom(
+    draw: ImageDraw.ImageDraw,
+    tip_px: tuple[float, float],
+    genome: Genome,
+    node_id: int,
+    color: Color,
+) -> None:
+    """Draw one blossom at a living tip: a rosette of petals around a bright eye.
+
+    The rosette's rotation is seeded by ``node_id`` so a flower keeps its face
+    between renders instead of spinning every tick.
+    """
+    radius = _BLOSSOM_RADIUS * genome.leaf_size
+    phase = random.Random(f"bloom:{node_id}").uniform(0.0, 2.0 * math.pi)
+    cx, cy = tip_px
+    for petal in range(_PETALS):
+        angle = phase + petal * 2.0 * math.pi / _PETALS
+        px = cx + radius * 0.95 * math.cos(angle)
+        py = cy + radius * 0.95 * math.sin(angle)
+        draw.ellipse((px - radius * 0.8, py - radius * 0.8, px + radius * 0.8, py + radius * 0.8),
+                     fill=color)
+    eye = _lerp_color(color, BLOSSOM_EYE, 0.6)
+    draw.ellipse((cx - radius * 0.6, cy - radius * 0.6, cx + radius * 0.6, cy + radius * 0.6),
+                 fill=eye)
+
+
+def _draw_seed_head(
+    draw: ImageDraw.ImageDraw, tip_px: tuple[float, float], genome: Genome, node_id: int
+) -> None:
+    """Draw the pale seed head a tip carries once the plant has set seed.
+
+    Only some tips bear one, chosen by ``node_id``, so the seed sits on the plant as
+    unevenly as everything else it has grown.
+    """
+    rng = random.Random(f"seed:{node_id}")
+    if rng.random() > 0.55:
+        return
+    radius = _SEED_RADIUS * genome.leaf_size
+    cx, cy = tip_px
+    for _ in range(_SEEDS_PER_HEAD):
+        angle = rng.uniform(0.0, 2.0 * math.pi)
+        dist = rng.uniform(0.0, radius * 1.6)
+        sx, sy = cx + dist * math.cos(angle), cy + dist * math.sin(angle)
+        draw.ellipse((sx - radius, sy - radius, sx + radius, sy + radius), fill=SEED_HEAD)
+
+
+def _epiphyte_world_points(structure: Structure) -> dict[int, tuple[float, float]]:
+    """Place the epiphyte's own coordinates into its host's space, at its limb.
+
+    The epiphyte's germ sits at its own origin, so translating by the host node it
+    settled on lands the little plant exactly on that branch.
+    """
+    epiphyte = structure.epiphyte
+    if epiphyte is None:
+        return {}
+    limb = structure.nodes[epiphyte.host_node_id]
+    return {node.id: (limb.x + node.x, limb.y + node.y) for node in epiphyte.structure.nodes}
+
+
+def _projection(
+    points: list[tuple[float, float]], vitality: float, earth_top: int
+) -> tuple[Callable[[float, float], tuple[float, float]], Callable[[float], float]]:
+    """Return ``(to_px, height_fraction)`` fitting ``points`` into the frame.
+
+    ``to_px`` centres the plant horizontally, roots its base on the earth line,
+    flips y so it grows upward, and sags the young (high) ends downward when the
+    plant is parched. ``height_fraction`` says how far up the plant a given y sits,
+    which drives both the stem gradient and that sag.
+    """
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    data_w, data_h = max_x - min_x, max_y - min_y
+
+    root_y = earth_top + _ROOT_OVERLAP
+    scale_x = (_W - 2 * _PADDING) / data_w if data_w > 1e-9 else float("inf")
+    scale_y = (root_y - _PADDING) / data_h if data_h > 1e-9 else float("inf")
+    scale = min(scale_x, scale_y)
+    if scale == float("inf"):
+        scale = 1.0
+    center_x = (min_x + max_x) / 2.0
+    dryness = 1.0 - vitality
+
+    def height_fraction(y: float) -> float:
+        return (y - min_y) / data_h if data_h > 1e-9 else 1.0
+
+    def to_px(x: float, y: float) -> tuple[float, float]:
+        droop = _DROOP_MAX * dryness * height_fraction(y) ** 1.25
+        return (_W / 2 + (x - center_x) * scale, root_y - (y - min_y) * scale + droop)
+
+    return to_px, height_fraction
+
+
+def _stem_segments(
+    structure: Structure,
+    pixels: dict[int, tuple[float, float]],
+    heights: dict[int, float],
+    vitality: float,
+    max_width: float,
+) -> list[Segment]:
+    """Build a structure's stems as drawable segments, thickest (trunk) first.
+
+    Width follows the pipe model — how many tips a node carries, relative to the
+    whole — scaled into this structure's own range, so an epiphyte's trunk stays a
+    twig. Dead wood is a constant weathered grey; living wood takes the height
+    gradient, parched toward brown as vitality falls.
+    """
+    nodes = structure.nodes
+    tip_counts = _subtree_tip_counts(structure)
+    max_tips = max(tip_counts.values())
+    branches = sorted(
+        ((node, nodes[node.parent_id]) for node in nodes if node.parent_id is not None),
+        key=lambda pair: tip_counts[pair[0].id],
+        reverse=True,
+    )
+
+    segments: list[Segment] = []
+    for node, parent in branches:
+        if node.state is NodeState.DEAD:
+            color = DEAD_WOOD
+        else:
+            middle = (heights[node.id] + heights[parent.id]) / 2.0
+            color = _parch(_lerp_color(STEM_BOTTOM, STEM_TOP, middle), vitality)
+        frac = (tip_counts[node.id] ** 0.5) / (max_tips ** 0.5)
+        width = max(_MIN_STEM, _MIN_STEM + (max_width - _MIN_STEM) * frac)
+        segments.append((pixels[parent.id], pixels[node.id], color, width))
+    return segments
+
+
+def _draw_segments(draw: ImageDraw.ImageDraw, segments: list[Segment]) -> None:
+    """Stroke stem segments in order, rounding the joint where widths differ."""
+    for start, end, color, width in segments:
+        draw.line((start, end), fill=color, width=max(1, round(width)))
+        radius = width / 2.0
+        cx, cy = end
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=color)
+
+
+def _draw_crown(
+    draw: ImageDraw.ImageDraw,
+    structure: Structure,
+    pixels: dict[int, tuple[float, float]],
+    genome: Genome,
+    vitality: float,
+    bloom_color: Color | None = None,
+    seeded: bool = False,
+    leaf_color: Color = LEAF,
+) -> None:
+    """Draw what the living tips carry: leaves, then any seed heads and blossoms."""
+    for node in structure.nodes:
+        if node.state is not NodeState.TIP:
+            continue
+        tip_px = pixels[node.id]
+        _draw_leaves(draw, tip_px, vitality, genome, node.id, leaf_color)
+        if seeded:
+            _draw_seed_head(draw, tip_px, genome, node.id)
+        if bloom_color is not None:
+            _draw_blossom(draw, tip_px, genome, node.id, bloom_color)
+
+
 def _draw_structure(
     draw: ImageDraw.ImageDraw,
     structure: Structure,
@@ -177,71 +388,44 @@ def _draw_structure(
     vitality: float,
     earth_top: int,
 ) -> None:
-    """Draw the body (stems, pipe-model width, dead scars) and living foliage."""
-    nodes = structure.nodes
-    tip_counts = _subtree_tip_counts(structure)
-    max_tips = max(tip_counts.values())
-    dryness = 1.0 - vitality
+    """Draw the whole plant: body and foliage, plus whatever it has earned.
 
-    xs = [node.x for node in nodes]
-    ys = [node.y for node in nodes]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    data_w = max_x - min_x
-    data_h = max_y - min_y
+    A plant in bloom carries blossoms in its own colour, one that has set seed
+    carries seed heads, and a tree old enough to have taken on an epiphyte carries
+    that little second plant on the limb it settled on.
+    """
+    epiphyte_world = _epiphyte_world_points(structure)
+    points = [(node.x, node.y) for node in structure.nodes] + list(epiphyte_world.values())
+    to_px, height_fraction = _projection(points, vitality, earth_top)
 
-    root_y = earth_top + _ROOT_OVERLAP
-    area_w = _W - 2 * _PADDING
-    area_h = root_y - _PADDING
-    scale_x = area_w / data_w if data_w > 1e-9 else float("inf")
-    scale_y = area_h / data_h if data_h > 1e-9 else float("inf")
-    scale = min(scale_x, scale_y)
-    if scale == float("inf"):
-        scale = 1.0
-    center_x = (min_x + max_x) / 2.0
+    pixels = {node.id: to_px(node.x, node.y) for node in structure.nodes}
+    heights = {node.id: height_fraction(node.y) for node in structure.nodes}
+    segments = _stem_segments(structure, pixels, heights, vitality, _MAX_STEM)
 
-    def height_fraction(y: float) -> float:
-        return (y - min_y) / data_h if data_h > 1e-9 else 1.0
-
-    def to_px(node: Node) -> tuple[float, float]:
-        # Centre horizontally, root the base on the earth line, flip y so the plant
-        # grows upward, then sag the young (high) ends downward when parched.
-        droop = _DROOP_MAX * dryness * height_fraction(node.y) ** 1.25
-        return (
-            _W / 2 + (node.x - center_x) * scale,
-            root_y - (node.y - min_y) * scale + droop,
+    epiphyte_pixels = {node_id: to_px(x, y) for node_id, (x, y) in epiphyte_world.items()}
+    if structure.epiphyte is not None:
+        epiphyte_heights = {
+            node_id: height_fraction(y) for node_id, (_, y) in epiphyte_world.items()
+        }
+        segments += _stem_segments(
+            structure.epiphyte.structure,
+            epiphyte_pixels,
+            epiphyte_heights,
+            vitality,
+            _EPIPHYTE_MAX_STEM,
         )
+    _draw_segments(draw, segments)
 
-    def width_for(node_id: int) -> float:
-        frac = (tip_counts[node_id] ** 0.5) / (max_tips ** 0.5)
-        return max(_MIN_STEM, _MIN_STEM + (_MAX_STEM - _MIN_STEM) * frac)
-
-    pixels = {node.id: to_px(node) for node in nodes}
-
-    # Stems: draw thickest (trunk) first so the fine twigs sit cleanly on top. Dead
-    # wood is a constant weathered grey; living wood is the height gradient, parched
-    # toward brown as vitality falls.
-    ordered = sorted(
-        (node for node in nodes if node.parent_id is not None),
-        key=lambda n: tip_counts[n.id],
-        reverse=True,
-    )
-    for node in ordered:
-        parent_px = pixels[node.parent_id]  # type: ignore[index]
-        node_px = pixels[node.id]
-        if node.state is NodeState.DEAD:
-            color = DEAD_WOOD
-        else:
-            t = height_fraction((node.y + nodes[node.parent_id].y) / 2.0)  # type: ignore[index]
-            color = _parch(_lerp_color(STEM_BOTTOM, STEM_TOP, t), vitality)
-        width = width_for(node.id)
-        draw.line((parent_px, node_px), fill=color, width=max(1, round(width)))
-        # A dot at the joint rounds the corner where segments of unequal width meet.
-        radius = width / 2.0
-        cx, cy = node_px
-        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=color)
-
-    # Foliage: leaves only on living tips, over the stems.
-    for node in nodes:
-        if node.state is NodeState.TIP:
-            _draw_leaves(draw, pixels[node.id], vitality, genome, node.id)
+    # A bloom that outlasts the water fades with the rest of the plant before it
+    # finally drops, so a flowering channel going quiet is visible as it happens.
+    bloom_color = _parch(_bloom_color(genome), vitality) if is_blooming(structure, vitality) else None
+    _draw_crown(draw, structure, pixels, genome, vitality, bloom_color, has_seeded(structure))
+    if structure.epiphyte is not None:
+        _draw_crown(
+            draw,
+            structure.epiphyte.structure,
+            epiphyte_pixels,
+            epiphyte_genome(structure.seed),
+            vitality,
+            leaf_color=EPIPHYTE_LEAF,
+        )

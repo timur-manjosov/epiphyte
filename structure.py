@@ -20,6 +20,16 @@ single-gene mutation of the parent's seed, so it resembles the parent yet is its
 own individual — carrying the lineage (generation and parent seed) forward. There
 is no final state; the line simply continues.
 
+Above growth and death sit the milestones, and they are thresholds rather than
+stages. The plant banks a reserve of healthy time; once that bank is full and its
+body is mature it comes into bloom, and flowering then spends the bank down until
+the bloom ends by itself — so a season emerges from the rules instead of being
+scheduled, and the next one has to be earned again. A long enough bloom sets seed,
+which stays and enriches what the line hands on. And a tree grown very old, very
+large and flowered many times over can take on an epiphyte: a tiny second organism
+with its own mini-genome, riding one of its host's old limbs. None of it can be
+forced by a burst of activity — only accumulated.
+
 Two plants with the same ``seed`` are identical (same :class:`Genome`, same
 growth) — that seeded determinism *is* each plant's individuality. Growth is
 also chunk-invariant: running ``steps`` steps at once yields exactly the same
@@ -69,8 +79,10 @@ BRANCH_ORDER_DECAY: float = 0.5
 LENGTH_ORDER_DECAY: float = 0.9
 #: Fractional random spread applied to each internode's length (organic noise).
 LENGTH_JITTER: float = 0.15
-#: The direction the growing tip is gently pulled toward, in degrees (straight up).
+#: The direction the main axis is gently pulled toward, in degrees (straight up).
 UPRIGHT_ANGLE: float = 90.0
+#: How far from upright a new limb may set out. Branches spread; they never dive.
+MAX_BRANCH_SPREAD: float = 62.0
 
 # --- Dieback constants (the body remembers drought) --------------------------
 #
@@ -90,6 +102,59 @@ DIEBACK_MAX_RATE: float = 0.5
 #: at pace — the difference between a bad week and abandonment.
 DIEBACK_EXPONENT: float = 2.5
 
+# --- Milestone constants (the rare states, earned over a whole life) ----------
+#
+# These are thresholds on what the plant has actually accumulated, never stages it
+# passes through on a timer. Flowering needs a long bank of healthy time *and* a
+# mature body, so no single busy evening can buy it; the bloom then spends that
+# bank down and ends by itself, and the next one has to be earned again — a season
+# emerging from the rules rather than scheduled. Seed is set by a bloom that lasts,
+# and an epiphyte settles only on a tree so old, so large and so often flowered
+# that short-term activity cannot reach it.
+
+#: Vitality at or above which a step counts as healthy: the plant banks reserve and
+#: is able to flower. Set inside the healthy band, so it takes a handful of people
+#: watering a channel day after day — one person's capped share cannot hold it.
+BLOOM_VITALITY: float = 0.55
+#: Vitality below which an open bloom wilts. Far under the threshold that opened it,
+#: because a channel breathes — busy by day, quiet overnight, quieter at the weekend
+#: — and a flowering that closed every night would be a readout of the hour rather
+#: than of a season. At the decay rate this is about a day of real silence.
+BLOOM_WILT_VITALITY: float = 0.25
+#: Banked healthy steps a plant must hold before it comes into bloom. At one tick
+#: an hour that is a fortnight of sustained health.
+BLOOM_HEALTHY_STEPS: int = 336
+#: Reserve spent per step while flowering. Above the one banked per healthy step,
+#: so a bloom drains its own bank and ends — even under unbroken care.
+BLOOM_COST: int = 2
+#: Body a plant needs before it can flower at all. A barely-healthy channel banks
+#: reserve just as fast as a thriving one but grows far slower, so this is what
+#: makes a lush channel flower sooner than a merely adequate one.
+BLOOM_MIN_NODES: int = 1200
+#: Steps in bloom after which the plant sets seed — a lasting flowering, not a
+#: brief one. Seed, once set, stays on the body.
+SEED_BLOOM_STEPS: int = 168
+
+#: Age, body and number of flowerings a tree needs before an epiphyte takes hold.
+#: Three months of life, a large body and several seasons of bloom behind it.
+EPIPHYTE_MIN_AGE: int = 2160
+EPIPHYTE_MIN_NODES: int = 2800
+EPIPHYTE_MIN_BLOOMS: int = 3
+#: How far into the host's past the limb it settles on must reach: an epiphyte
+#: takes hold on old wood, never on this week's twigs.
+EPIPHYTE_HOST_MATURITY: float = 0.5
+#: How far up the host that limb must sit. An epiphyte rides in the crown, not on
+#: the ankle of the trunk where it would just look like undergrowth.
+EPIPHYTE_HOST_MIN_HEIGHT: float = 0.35
+#: How far the epiphyte's inherited vigour, and the size of its parts, are dwarfed.
+#: It is a tiny second organism on a branch, never a second tree.
+EPIPHYTE_VIGOR_SCALE: float = 0.25
+EPIPHYTE_SIZE_SCALE: float = 0.6
+#: How much slower than its host the epiphyte grows. Host and epiphyte both
+#: accumulate for as long as they live, so it is this ratio — not any cap — that
+#: keeps the passenger small next to the tree however old the pair get.
+EPIPHYTE_PACE: float = 0.4
+
 
 class NodeState(Enum):
     """A node's vitality: growing tip, living wood, or dead wood (a scar)."""
@@ -104,7 +169,9 @@ class Node:
     """A single point in the plant's body, in the plant's own coordinate space.
 
     ``+y`` points up. ``angle`` is the growth heading in degrees (measured
-    counter-clockwise from ``+x``, so ``90`` is straight up). ``order`` is the
+    counter-clockwise from ``+x``, so ``90`` is straight up), and ``axis_angle`` is
+    the bearing of the limb this node belongs to — the heading its tropism pulls it
+    back toward, upright on the main axis and outward on a branch. ``order`` is the
     branching generation (``0`` on the main axis). ``birth_step`` records the
     growth step the node was created in. Node ids are assigned sequentially, so a
     node's id equals its index in :attr:`Structure.nodes` and every child's
@@ -120,18 +187,39 @@ class Node:
     birth_step: int
     order: int
     state: NodeState
+    axis_angle: float = UPRIGHT_ANGLE
+
+
+@dataclass(frozen=True)
+class LifeStats:
+    """What a plant has accumulated over its life — the ground of its milestones.
+
+    ``healthy_steps`` is a *reserve*, not a tally: it rises by one for every step
+    spent in health and is spent again by flowering, so it measures the care the
+    plant has stored up and not yet used. ``bloom_steps`` and ``bloom_count`` only
+    ever rise — how long the plant has flowered in total, and how many separate
+    times it has come into bloom. ``in_bloom`` is its bloom state as of the last
+    step, which is what lets a new flowering be told from a continuing one.
+    """
+
+    healthy_steps: int = 0
+    bloom_steps: int = 0
+    bloom_count: int = 0
+    in_bloom: bool = False
 
 
 @dataclass(frozen=True)
 class Structure:
-    """A plant body: its nodes as a tree, its ``seed``, age and lineage.
+    """A plant body: its nodes as a tree, its ``seed``, age, lineage and milestones.
 
     ``nodes`` is ordered by id (``nodes[i].id == i``); ``nodes[0]`` is the germ.
     ``step_count`` is how many growth steps have been applied so far, and doubles
     as the index of the next step to run. ``generation`` is ``1`` for a founding
     plant and rises with each successor; ``parent_seed`` is the seed of the
-    predecessor this plant sprang from (``None`` for a founder), so the body
-    carries its own lineage.
+    predecessor this plant sprang from (``None`` for a founder) and
+    ``lineage_blooms`` counts the ancestors that lived long enough to set seed, so
+    the body carries its own lineage. ``stats`` accumulates this plant's own life,
+    and ``epiphyte`` is the second organism it may come to carry.
     """
 
     nodes: tuple[Node, ...]
@@ -139,6 +227,25 @@ class Structure:
     seed: int
     generation: int = 1
     parent_seed: int | None = None
+    lineage_blooms: int = 0
+    stats: LifeStats = LifeStats()
+    epiphyte: Epiphyte | None = None
+
+
+@dataclass(frozen=True)
+class Epiphyte:
+    """A tiny second organism riding on one of its host's old limbs.
+
+    Taking the project's name literally: a plant that grew old, large and flowered
+    enough times can come to carry one. It is a plant in its own right — the same
+    :class:`Structure`, grown by the same rules — with its own seed and a dwarfed
+    mini-genome derived from the host's, anchored at ``host_node_id`` and living in
+    coordinates relative to that limb. It shares its host's weather, so it grows
+    and dies back with it.
+    """
+
+    host_node_id: int
+    structure: Structure
 
 
 @dataclass(frozen=True)
@@ -165,6 +272,9 @@ class Genome:
     leaf_size: float
     #: Leaf density multiplier — how thickly living tips are foliaged.
     leaf_density: float
+    #: Blossom hue as a position (0..1) along the renderer's accent range, so a
+    #: plant that reaches bloom flowers in a colour that is its own.
+    bloom_hue: float
 
 
 # --- Heredity: genes packed into the seed's bit-fields -------------------------
@@ -175,7 +285,7 @@ class Genome:
 # yet is its own individual, and a lineage drifts one trait at a time.
 _GENE_BITS = 7
 _GENE_MAX = (1 << _GENE_BITS) - 1  # 127 levels per gene
-_GENE_COUNT = 8                    # eight genes -> 56 of the seed's bits
+_GENE_COUNT = 9                    # nine genes -> 63 of the seed's bits
 
 
 def _allele(seed: int, index: int) -> float:
@@ -204,6 +314,7 @@ def genome_from_seed(seed: int) -> Genome:
         vigor=_scaled(0.8, 1.3, _allele(seed, 5)),
         leaf_size=_scaled(0.8, 1.4, _allele(seed, 6)),
         leaf_density=_scaled(0.7, 1.5, _allele(seed, 7)),
+        bloom_hue=_allele(seed, 8),
     )
 
 
@@ -221,11 +332,18 @@ def mutate(seed: int) -> int:
     return (seed & ~(_GENE_MAX << shift)) | (changed << shift)
 
 
-def germinate(seed: int, generation: int = 1, parent_seed: int | None = None) -> Structure:
+def germinate(
+    seed: int,
+    generation: int = 1,
+    parent_seed: int | None = None,
+    lineage_blooms: int = 0,
+) -> Structure:
     """Return a fresh structure: a single germ tip at the origin, growing up.
 
-    ``generation`` and ``parent_seed`` carry the lineage; a founding plant leaves
-    them at their defaults (generation 1, no parent).
+    ``generation``, ``parent_seed`` and ``lineage_blooms`` carry the lineage; a
+    founding plant leaves them at their defaults (generation 1, no parent, an
+    unflowered line). The milestones always start from nothing: an heir inherits
+    its ancestors' record, never their accumulated life.
     """
     germ = Node(
         id=0,
@@ -238,7 +356,12 @@ def germinate(seed: int, generation: int = 1, parent_seed: int | None = None) ->
         state=NodeState.TIP,
     )
     return Structure(
-        nodes=(germ,), step_count=0, seed=seed, generation=generation, parent_seed=parent_seed
+        nodes=(germ,),
+        step_count=0,
+        seed=seed,
+        generation=generation,
+        parent_seed=parent_seed,
+        lineage_blooms=lineage_blooms,
     )
 
 
@@ -252,13 +375,93 @@ def germinate_successor(structure: Structure) -> Structure:
 
     The successor's seed is a single-gene :func:`mutate` of the parent's, so it
     resembles the parent but is its own individual; ``generation`` rises by one and
-    the parent's seed is recorded as lineage. Pure — the caller (the adapter)
-    decides *when* a dead plant reseeds.
+    the parent's seed is recorded as lineage. A predecessor that lived long enough
+    to set seed hands on a richer line — its flowering is counted into
+    ``lineage_blooms`` — while one that died unflowered hands on only its shape.
+    Pure — the caller (the adapter) decides *when* a dead plant reseeds.
     """
     return germinate(
         mutate(structure.seed),
         generation=structure.generation + 1,
         parent_seed=structure.seed,
+        lineage_blooms=structure.lineage_blooms + (1 if has_seeded(structure) else 0),
+    )
+
+
+# --- Milestones: bloom, seed and the epiphyte ---------------------------------
+
+
+def _bloom_state(size: int, healthy_steps: int, in_bloom: bool, vitality: float) -> bool:
+    """Whether a plant of this size, reserve and bloom state flowers at ``vitality``.
+
+    Coming *into* bloom takes a mature body, health, and a full bank of healthy time;
+    staying in bloom takes only enough reserve left to pay for another step of it and
+    a vitality that has not fallen away altogether. Both thresholds are therefore
+    hysteretic: hard to reach, then held through the ordinary ebb and flow, and lost
+    for good either when the bank runs dry or when the plant is truly left to dry out.
+    """
+    if size < BLOOM_MIN_NODES:
+        return False
+    if in_bloom:
+        return vitality >= BLOOM_WILT_VITALITY and healthy_steps >= BLOOM_COST
+    return vitality >= BLOOM_VITALITY and healthy_steps >= BLOOM_HEALTHY_STEPS
+
+
+def is_blooming(structure: Structure, moisture: float) -> bool:
+    """True if the plant is in bloom right now (pure, from its life statistics)."""
+    return _bloom_state(
+        len(structure.nodes), structure.stats.healthy_steps, structure.stats.in_bloom, moisture
+    )
+
+
+def has_seeded(structure: Structure) -> bool:
+    """True once the plant has flowered long enough to set seed — and stays true.
+
+    Seed is part of the accumulated body, like wood: a drought takes the blossoms
+    but the seed heads it earned remain.
+    """
+    return structure.stats.bloom_steps >= SEED_BLOOM_STEPS
+
+
+def _epiphyte_conditions_met(age: int, size: int, blooms: int) -> bool:
+    """Whether age, body and flowerings together allow an epiphyte to take hold."""
+    return (
+        age >= EPIPHYTE_MIN_AGE
+        and size >= EPIPHYTE_MIN_NODES
+        and blooms >= EPIPHYTE_MIN_BLOOMS
+    )
+
+
+def can_host_epiphyte(structure: Structure) -> bool:
+    """True if the plant is old, large and often-flowered enough to carry an epiphyte.
+
+    A pure function of the life statistics: no single condition is enough, and none
+    of the three can be reached by a burst of activity.
+    """
+    return _epiphyte_conditions_met(
+        structure.step_count, len(structure.nodes), structure.stats.bloom_count
+    )
+
+
+def _epiphyte_seed(host_seed: int) -> int:
+    """Derive the epiphyte's own seed from its host's (deterministic)."""
+    return random.Random(f"epiphyte-seed:{host_seed}").getrandbits(_GENE_BITS * _GENE_COUNT)
+
+
+def epiphyte_genome(host_seed: int) -> Genome:
+    """The mini-genome of the epiphyte a host carries: its own genes, dwarfed.
+
+    The seed is derived from the host's, so a given tree always grows the same
+    little companion, but the genes are its own — and its vigour and the size of its
+    parts are scaled far down, which is what keeps it a tuft on a branch rather than
+    a second tree.
+    """
+    base = genome_from_seed(_epiphyte_seed(host_seed))
+    return replace(
+        base,
+        vigor=base.vigor * EPIPHYTE_VIGOR_SCALE,
+        internode_length=base.internode_length * EPIPHYTE_SIZE_SCALE,
+        leaf_size=base.leaf_size * EPIPHYTE_SIZE_SCALE,
     )
 
 
@@ -267,15 +470,40 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def _nudged_angle(base_angle: float, genome: Genome, rng: random.Random) -> float:
-    """Pull ``base_angle`` toward vertical by the genome's gravitropism, then add
-    one organic jitter draw. Consumes exactly one random number."""
-    toward_up = base_angle + genome.gravitropism * (UPRIGHT_ANGLE - base_angle)
-    return toward_up + rng.uniform(-genome.angle_jitter, genome.angle_jitter)
+def _nudged_angle(
+    base_angle: float, axis_angle: float, genome: Genome, rng: random.Random
+) -> float:
+    """Pull ``base_angle`` back toward its limb's bearing by the genome's
+    gravitropism, then add one organic jitter draw. Consumes one random number.
+
+    Pulling toward the limb's own bearing rather than toward vertical is what lets
+    a branch keep the direction it set out in: the trunk holds itself upright, a
+    limb holds itself outward, and the tree keeps its proportions as it ages
+    instead of drawing itself together into a vertical rope.
+    """
+    toward_axis = base_angle + genome.gravitropism * (axis_angle - base_angle)
+    return toward_axis + rng.uniform(-genome.angle_jitter, genome.angle_jitter)
+
+
+def _limb_bearing(axis_angle: float, side: float, genome: Genome) -> float:
+    """The bearing a new limb sets out on, and from then on holds.
+
+    It diverges from the axis it grew from by the genome's branch angle, but never
+    further from upright than :data:`MAX_BRANCH_SPREAD` — deep in a crown the
+    divergences would otherwise pile up until a branch grew back down into the earth.
+    """
+    bearing = axis_angle + side * genome.branch_angle
+    return max(UPRIGHT_ANGLE - MAX_BRANCH_SPREAD, min(UPRIGHT_ANGLE + MAX_BRANCH_SPREAD, bearing))
 
 
 def _child(
-    parent: Node, angle: float, length: float, step_index: int, order: int, node_id: int
+    parent: Node,
+    angle: float,
+    axis_angle: float,
+    length: float,
+    step_index: int,
+    order: int,
+    node_id: int,
 ) -> Node:
     """Create a new tip node one internode away from ``parent`` along ``angle``."""
     radians = math.radians(angle)
@@ -288,6 +516,7 @@ def _child(
         birth_step=step_index,
         order=order,
         state=NodeState.TIP,
+        axis_angle=axis_angle,
     )
 
 
@@ -308,9 +537,10 @@ def _grow_tip(
 
     The tip always lignifies. With probability ``terminate_chance`` (only nonzero
     once the crown is over capacity) it caps off there — no continuation — trimming
-    the crown. Otherwise it puts out a continuation on the same axis and, with a
-    probability that decays with branch order, a diverging side branch. New node
-    ids continue the sequence, preserving the ``id == index`` invariant.
+    the crown. Otherwise it puts out a continuation carrying the same axis bearing
+    and, with a probability that decays with branch order, a side branch that sets
+    out on a bearing of its own and keeps it. New node ids continue the sequence,
+    preserving the ``id == index`` invariant.
     """
     nodes[tip.id] = replace(tip, state=NodeState.WOODY)
     if rng.random() < terminate_chance:
@@ -321,15 +551,22 @@ def _grow_tip(
     def internode() -> float:
         return base_length * (1.0 + rng.uniform(-LENGTH_JITTER, LENGTH_JITTER))
 
-    continuation_angle = _nudged_angle(tip.angle, genome, rng)
-    nodes.append(_child(tip, continuation_angle, internode(), step_index, tip.order, len(nodes)))
+    continuation_angle = _nudged_angle(tip.angle, tip.axis_angle, genome, rng)
+    nodes.append(
+        _child(
+            tip, continuation_angle, tip.axis_angle, internode(), step_index, tip.order, len(nodes)
+        )
+    )
 
     branch_chance = genome.branch_probability * (BRANCH_ORDER_DECAY ** tip.order)
     if tip.order < MAX_ORDER and rng.random() < branch_chance:
         side = 1.0 if rng.random() < 0.5 else -1.0
-        lateral_angle = _nudged_angle(tip.angle + side * genome.branch_angle, genome, rng)
+        bearing = _limb_bearing(tip.axis_angle, side, genome)
+        lateral_angle = _nudged_angle(bearing, bearing, genome, rng)
         nodes.append(
-            _child(tip, lateral_angle, internode(), step_index, tip.order + 1, len(nodes))
+            _child(
+                tip, lateral_angle, bearing, internode(), step_index, tip.order + 1, len(nodes)
+            )
         )
 
 
@@ -407,6 +644,90 @@ def _dieback_step(nodes: list[Node], seed: int, vitality: float, step_index: int
             nodes[node.id] = replace(node, state=NodeState.DEAD)
 
 
+def _milestone_step(stats: LifeStats, size: int, vitality: float) -> LifeStats:
+    """Advance the life statistics by one step: bank health, flower, spend reserve.
+
+    A healthy step banks one unit of reserve. If that leaves the plant in bloom it
+    flowers — counting a new flowering when this is the first step of one — and
+    pays :data:`BLOOM_COST` out of the bank, which is more than health puts in. So
+    a bloom always drains itself and ends, and the plant has to earn the next one.
+    """
+    healthy_steps = stats.healthy_steps + (1 if vitality >= BLOOM_VITALITY else 0)
+    blooming = _bloom_state(size, healthy_steps, stats.in_bloom, vitality)
+    if not blooming:
+        return replace(stats, healthy_steps=healthy_steps, in_bloom=False)
+    return LifeStats(
+        healthy_steps=max(0, healthy_steps - BLOOM_COST),
+        bloom_steps=stats.bloom_steps + 1,
+        bloom_count=stats.bloom_count + (0 if stats.in_bloom else 1),
+        in_bloom=True,
+    )
+
+
+def _mature_limb(nodes: list[Node], host_seed: int, age: int) -> Node | None:
+    """Pick the old limb an epiphyte takes hold on, or ``None`` if there is none.
+
+    Eligible wood is living, is a branch rather than the main axis, grew in the
+    early part of the host's life, and sits well up in the crown. Of that, the
+    lowest branch order is preferred — the tree's heavy limbs, not its fine twigs —
+    and the choice among those is seeded by the host, so a given tree always carries
+    its epiphyte in one place.
+    """
+    cutoff = age * EPIPHYTE_HOST_MATURITY
+    heights = [node.y for node in nodes]
+    floor = min(heights) + (max(heights) - min(heights)) * EPIPHYTE_HOST_MIN_HEIGHT
+    eligible = [
+        node
+        for node in nodes
+        if node.state is NodeState.WOODY
+        and node.order >= 1
+        and node.birth_step <= cutoff
+        and node.y >= floor
+    ]
+    if not eligible:
+        return None
+    lowest = min(node.order for node in eligible)
+    limbs = [node for node in eligible if node.order == lowest]
+    return random.Random(f"epiphyte-host:{host_seed}").choice(limbs)
+
+
+def _settle_epiphyte(nodes: list[Node], host_seed: int, age: int) -> Epiphyte | None:
+    """Germinate an epiphyte on the host's oldest heavy limb, if it has one."""
+    limb = _mature_limb(nodes, host_seed, age)
+    if limb is None:
+        return None
+    return Epiphyte(host_node_id=limb.id, structure=germinate(_epiphyte_seed(host_seed)))
+
+
+def _advance_epiphyte(
+    epiphyte: Epiphyte, host_seed: int, vitality: float, extension_chance: float
+) -> Epiphyte:
+    """Advance the epiphyte one step under its host's vitality — it shares the weather.
+
+    It grows and dies back by exactly the same rules as any plant, keyed by its own
+    seed and its own age, only far slower — but it accumulates no milestones of its
+    own: an epiphyte never blooms and never carries an epiphyte in turn.
+    """
+    genome = epiphyte_genome(host_seed)
+    body = epiphyte.structure
+    nodes = list(body.nodes)
+    if vitality < DIEBACK_MOISTURE_THRESHOLD:
+        _dieback_step(nodes, body.seed, vitality, body.step_count)
+    else:
+        _growth_step(
+            nodes,
+            genome,
+            body.seed,
+            extension_chance * EPIPHYTE_PACE,
+            _capacity(genome),
+            body.step_count,
+        )
+    return replace(
+        epiphyte,
+        structure=replace(body, nodes=tuple(nodes), step_count=body.step_count + 1),
+    )
+
+
 def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> Structure:
     """Return the structure advanced ``steps`` life-steps under ``moisture`` (pure).
 
@@ -421,6 +742,11 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
       of growing it dies back from the outside in. Dead wood stays in the body
       forever, a permanent scar of the drought.
 
+    Either way each step also advances the plant's life statistics, which is where
+    the milestones come from: health is banked and spent by flowering, and a tree
+    that has grown old and large and flowered often enough takes on an epiphyte,
+    which from then on grows alongside it under the same weather.
+
     So the number of dead nodes only ever rises, and lignified wood (living plus
     dead) never falls: the body accumulates monotonically and remembers its whole
     life. Decisions are seeded by ``(seed, node_id, step_index)``, so this is
@@ -430,15 +756,24 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
     vitality = _clamp01(moisture)
     extension_chance = vitality * EXTENSION_RATE
     capacity = _capacity(genome)
+    parched = vitality < DIEBACK_MOISTURE_THRESHOLD
     nodes = list(structure.nodes)
     step_index = structure.step_count
+    stats = structure.stats
+    epiphyte = structure.epiphyte
 
     for _ in range(max(0, steps)):
-        if vitality < DIEBACK_MOISTURE_THRESHOLD:
+        if parched:
             _dieback_step(nodes, structure.seed, vitality, step_index)
         else:
             _growth_step(nodes, genome, structure.seed, extension_chance, capacity, step_index)
+        stats = _milestone_step(stats, len(nodes), vitality)
         step_index += 1
+
+        if epiphyte is not None:
+            epiphyte = _advance_epiphyte(epiphyte, structure.seed, vitality, extension_chance)
+        elif _epiphyte_conditions_met(step_index, len(nodes), stats.bloom_count):
+            epiphyte = _settle_epiphyte(nodes, structure.seed, step_index)
 
     return Structure(
         nodes=tuple(nodes),
@@ -446,16 +781,38 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
         seed=structure.seed,
         generation=structure.generation,
         parent_seed=structure.parent_seed,
+        lineage_blooms=structure.lineage_blooms,
+        stats=stats,
+        epiphyte=epiphyte,
     )
 
 
 def serialize(structure: Structure) -> dict:
-    """Return a JSON-serialisable dict fully describing ``structure`` (pure)."""
+    """Return a JSON-serialisable dict fully describing ``structure`` (pure).
+
+    An epiphyte is nested as a structure of its own, since that is exactly what it
+    is.
+    """
     return {
         "seed": structure.seed,
         "step_count": structure.step_count,
         "generation": structure.generation,
         "parent_seed": structure.parent_seed,
+        "lineage_blooms": structure.lineage_blooms,
+        "stats": {
+            "healthy_steps": structure.stats.healthy_steps,
+            "bloom_steps": structure.stats.bloom_steps,
+            "bloom_count": structure.stats.bloom_count,
+            "in_bloom": structure.stats.in_bloom,
+        },
+        "epiphyte": (
+            None
+            if structure.epiphyte is None
+            else {
+                "host_node_id": structure.epiphyte.host_node_id,
+                "structure": serialize(structure.epiphyte.structure),
+            }
+        ),
         "nodes": [
             {
                 "id": node.id,
@@ -466,6 +823,7 @@ def serialize(structure: Structure) -> dict:
                 "birth_step": node.birth_step,
                 "order": node.order,
                 "state": node.state.value,
+                "axis_angle": node.axis_angle,
             }
             for node in structure.nodes
         ],
@@ -473,7 +831,13 @@ def serialize(structure: Structure) -> dict:
 
 
 def deserialize(data: dict) -> Structure:
-    """Rebuild a :class:`Structure` from :func:`serialize`'s output (pure)."""
+    """Rebuild a :class:`Structure` from :func:`serialize`'s output (pure).
+
+    Fields added by a later phase default to their fresh values, so a plant stored
+    before those phases loads as one that has simply not reached them yet.
+    """
+    stats = data.get("stats", {})
+    epiphyte = data.get("epiphyte")
     nodes = tuple(
         Node(
             id=entry["id"],
@@ -484,6 +848,8 @@ def deserialize(data: dict) -> Structure:
             birth_step=entry["birth_step"],
             order=entry["order"],
             state=NodeState(entry["state"]),
+            # Nodes stored before limbs held a bearing keep growing along their own.
+            axis_angle=entry.get("axis_angle", entry["angle"]),
         )
         for entry in data["nodes"]
     )
@@ -493,4 +859,19 @@ def deserialize(data: dict) -> Structure:
         seed=data["seed"],
         generation=data.get("generation", 1),
         parent_seed=data.get("parent_seed"),
+        lineage_blooms=data.get("lineage_blooms", 0),
+        stats=LifeStats(
+            healthy_steps=stats.get("healthy_steps", 0),
+            bloom_steps=stats.get("bloom_steps", 0),
+            bloom_count=stats.get("bloom_count", 0),
+            in_bloom=stats.get("in_bloom", False),
+        ),
+        epiphyte=(
+            None
+            if epiphyte is None
+            else Epiphyte(
+                host_node_id=epiphyte["host_node_id"],
+                structure=deserialize(epiphyte["structure"]),
+            )
+        ),
     )

@@ -3,17 +3,32 @@
 Phase 5 properties: germination, seeded determinism and individuality, additive
 growth, moisture-scaled growth, and a consistent tree topology. Phase 7 adds the
 biography: drought kills wood from the outside in, dead wood is a permanent scar
-that survives recovery, and the accumulated body never shrinks.
+that survives recovery, and the accumulated body never shrinks. Phase 8 adds the
+lifecycle, and Phase 9 the milestones — bloom, seed and the epiphyte — which are
+thresholds on the accumulated life statistics rather than stages on a timer.
 """
 
 import dataclasses
 
 from structure import (
+    BLOOM_HEALTHY_STEPS,
+    BLOOM_MIN_NODES,
+    BLOOM_VITALITY,
+    BLOOM_WILT_VITALITY,
+    EPIPHYTE_MIN_AGE,
+    EPIPHYTE_MIN_BLOOMS,
+    EPIPHYTE_MIN_NODES,
+    SEED_BLOOM_STEPS,
+    LifeStats,
     NodeState,
+    can_host_epiphyte,
+    epiphyte_genome,
     genome_from_seed,
     germinate,
     germinate_successor,
     grow,
+    has_seeded,
+    is_blooming,
     is_dead,
     mutate,
     serialize,
@@ -328,3 +343,208 @@ def test_generation_climbs_across_a_lineage() -> None:
         seeds.append(plant.seed)
 
     assert len(set(seeds)) == len(seeds)  # every generation is its own individual
+
+
+# --- Phase 9: bloom, seed and the epiphyte ------------------------------------
+
+#: Vitality a lively channel holds — comfortably inside the band that banks health.
+TENDED = 0.75
+#: A seed with genes spread across their ranges, as a real 63-bit seed gives. The
+#: small seeds above sit at the bottom of every range, which grows a slow plant.
+TENDED_SEED = 0x2F3A9C41D77E5B2
+
+
+def test_short_activity_earns_no_milestone() -> None:
+    """A busy few days triggers nothing — the milestones are not on a timer."""
+    plant = _grown(TENDED_SEED, TENDED, 72)  # three days of hourly steps, all healthy
+    assert not is_blooming(plant, TENDED)
+    assert not has_seeded(plant)
+    assert not can_host_epiphyte(plant)
+    assert plant.epiphyte is None
+
+
+def test_bloom_needs_banked_health_and_a_mature_body() -> None:
+    """Both thresholds bind: neither a full bank nor a grown body flowers alone."""
+    sapling = _grown(TENDED_SEED, TENDED, 100)
+    assert len(sapling.nodes) < BLOOM_MIN_NODES
+    banked = dataclasses.replace(sapling, stats=LifeStats(healthy_steps=BLOOM_HEALTHY_STEPS * 5))
+    assert not is_blooming(banked, TENDED), "a young plant cannot flower, however tended"
+
+    grown = _grown(TENDED_SEED, TENDED, 400)
+    assert len(grown.nodes) >= BLOOM_MIN_NODES
+    short = dataclasses.replace(grown, stats=LifeStats(healthy_steps=BLOOM_HEALTHY_STEPS - 1))
+    assert not is_blooming(short, TENDED), "one step short of the bank is still no bloom"
+    full = dataclasses.replace(grown, stats=LifeStats(healthy_steps=BLOOM_HEALTHY_STEPS))
+    assert is_blooming(full, TENDED)
+
+
+def test_bloom_holds_through_a_dip_but_not_a_decline() -> None:
+    """An open bloom rides out the ordinary ebb; only a real decline takes it.
+
+    A channel breathes — busy by day, quiet overnight — so the bloom deliberately
+    survives falling back under the vitality that opened it, and is lost only when
+    the plant is genuinely left to dry out.
+    """
+    genome = genome_from_seed(TENDED_SEED)
+    flowering = grow(germinate(TENDED_SEED), genome, TENDED, BLOOM_HEALTHY_STEPS)
+    assert is_blooming(flowering, TENDED)
+
+    quiet_night = BLOOM_VITALITY - 0.1
+    assert is_blooming(flowering, quiet_night), "a quiet night does not close the flowers"
+    dipped = grow(flowering, genome, quiet_night, 12)
+    assert dipped.stats.in_bloom
+
+    declined = grow(dipped, genome, BLOOM_WILT_VITALITY - 0.05, 3)
+    assert not declined.stats.in_bloom, "a real decline wilts it"
+    assert declined.stats.healthy_steps < BLOOM_HEALTHY_STEPS, "flowering spent the bank"
+    assert not is_blooming(declined, 1.0), "a spent bloom is not bought back with water"
+
+    parched = grow(declined, genome, 0.1, 20)
+    assert parched.stats.healthy_steps == declined.stats.healthy_steps, "the bank waits"
+
+
+def test_bloom_ends_by_itself_and_is_earned_again() -> None:
+    """Flowering spends the bank that bought it, so a season ends and another comes.
+
+    This is what makes repeated blooming emerge from the rules: even under unbroken
+    care the plant cannot stay in flower, and each further season has to be banked.
+    """
+    genome = genome_from_seed(TENDED_SEED)
+    flowering = grow(germinate(TENDED_SEED), genome, TENDED, BLOOM_HEALTHY_STEPS)
+    assert flowering.stats.bloom_count == 1 and flowering.stats.in_bloom
+
+    spent = grow(flowering, genome, TENDED, BLOOM_HEALTHY_STEPS + 10)
+    assert not is_blooming(spent, TENDED), "unbroken health does not hold a bloom open"
+    assert spent.stats.bloom_count == 1
+
+    again = grow(spent, genome, TENDED, BLOOM_HEALTHY_STEPS + 10)
+    assert again.stats.bloom_count == 2
+
+
+def test_seed_is_set_by_a_lasting_bloom_and_stays() -> None:
+    """Seed is earned by a long flowering, and outlives the flowers themselves."""
+    genome = genome_from_seed(TENDED_SEED)
+    flowering = grow(germinate(TENDED_SEED), genome, TENDED, BLOOM_HEALTHY_STEPS)
+    assert not has_seeded(flowering), "coming into bloom is not yet setting seed"
+
+    seeded = grow(flowering, genome, TENDED, SEED_BLOOM_STEPS)
+    assert has_seeded(seeded)
+
+    parched = grow(seeded, genome, 0.0, 40)  # a drought takes the flowers
+    assert not is_blooming(parched, 0.0)
+    assert has_seeded(parched), "the seed it set stays on the body"
+
+
+def test_bloom_colour_is_a_gene():
+    """Blossom colour comes from the genome, so plants flower in different shades."""
+    seeds = (0x11111111111111, TENDED_SEED, 0x7654321ABCDEF0)
+    hues = {genome_from_seed(seed).bloom_hue for seed in seeds}
+    assert len(hues) > 1, "different plants must flower differently"
+    for seed in seeds:
+        assert 0.0 <= genome_from_seed(seed).bloom_hue <= 1.0
+        assert genome_from_seed(seed).bloom_hue == genome_from_seed(seed).bloom_hue
+
+
+def _epiphyte_ready(steps: int = 800):
+    """A tree grown large, then aged and credited with the flowerings it takes."""
+    genome = genome_from_seed(TENDED_SEED)
+    tree = grow(germinate(TENDED_SEED), genome, TENDED, steps)
+    assert len(tree.nodes) >= EPIPHYTE_MIN_NODES, "the test tree must be large enough"
+    return dataclasses.replace(
+        tree,
+        step_count=EPIPHYTE_MIN_AGE - 1,
+        stats=LifeStats(bloom_count=EPIPHYTE_MIN_BLOOMS),
+    )
+
+
+def test_epiphyte_needs_age_and_size_and_repeated_blooms() -> None:
+    """All three thresholds bind; no one of them alone lets an epiphyte take hold."""
+    ready = _epiphyte_ready()
+    old = dataclasses.replace(ready, step_count=EPIPHYTE_MIN_AGE)
+    assert can_host_epiphyte(old)
+
+    assert not can_host_epiphyte(ready), "one step short of old enough"
+    assert not can_host_epiphyte(
+        dataclasses.replace(old, stats=LifeStats(bloom_count=EPIPHYTE_MIN_BLOOMS - 1))
+    ), "a tree that has not flowered often enough carries nothing"
+
+    stunted = dataclasses.replace(
+        _grown(TENDED_SEED, TENDED, 60),
+        step_count=EPIPHYTE_MIN_AGE,
+        stats=LifeStats(bloom_count=EPIPHYTE_MIN_BLOOMS),
+    )
+    assert len(stunted.nodes) < EPIPHYTE_MIN_NODES
+    assert not can_host_epiphyte(stunted), "an old but stunted plant carries nothing"
+
+
+def test_epiphyte_settles_on_an_old_limb_and_grows_on() -> None:
+    """Once the thresholds are met an epiphyte takes hold, on old wood up the tree."""
+    ready = _epiphyte_ready()
+    assert ready.epiphyte is None
+    genome = genome_from_seed(TENDED_SEED)
+
+    settled = grow(ready, genome, TENDED, 1)
+    assert settled.epiphyte is not None
+    limb = settled.nodes[settled.epiphyte.host_node_id]
+    assert limb.state is NodeState.WOODY  # living branch wood, not a dead scar
+    assert limb.order >= 1  # a limb, not the trunk
+    assert limb.birth_step <= settled.step_count / 2  # old wood, not this week's twig
+
+    heights = [node.y for node in settled.nodes]
+    span = max(heights) - min(heights)
+    assert limb.y >= min(heights) + span * 0.3  # up in the crown, not at the foot
+
+    older = grow(settled, genome, TENDED, 200)
+    assert older.epiphyte is not None
+    assert older.epiphyte.host_node_id == settled.epiphyte.host_node_id  # it stays put
+    assert len(older.epiphyte.structure.nodes) > len(settled.epiphyte.structure.nodes)
+
+
+def test_epiphyte_is_a_dwarfed_individual_of_its_own() -> None:
+    """Its genome is derived from the host's seed, but is its own — and far smaller."""
+    host = genome_from_seed(TENDED_SEED)
+    guest = epiphyte_genome(TENDED_SEED)
+    assert guest.vigor < host.vigor
+    assert guest.internode_length < host.internode_length
+    assert epiphyte_genome(TENDED_SEED) == guest  # deterministic
+    assert epiphyte_genome(TENDED_SEED + 1) != guest  # and its own host's, not any host's
+
+
+def test_milestones_are_chunk_invariant() -> None:
+    """Bloom, seed and epiphyte come out the same at once as one step at a time."""
+    genome = genome_from_seed(TENDED_SEED)
+    ready = dataclasses.replace(
+        _epiphyte_ready(),
+        stats=LifeStats(healthy_steps=BLOOM_HEALTHY_STEPS, bloom_count=EPIPHYTE_MIN_BLOOMS),
+    )
+
+    at_once = grow(ready, genome, TENDED, 60)
+    piecewise = ready
+    for _ in range(60):
+        piecewise = grow(piecewise, genome, TENDED, 1)
+
+    assert serialize(at_once) == serialize(piecewise)
+
+
+def test_a_plant_that_set_seed_enriches_its_line() -> None:
+    """Only a plant that flowered long enough to seed adds to what its line hands on."""
+    genome = genome_from_seed(TENDED_SEED)
+    barren = grow(germinate(TENDED_SEED), genome, TENDED, 100)
+    assert not has_seeded(barren)
+    assert germinate_successor(barren).lineage_blooms == barren.lineage_blooms
+
+    seeded = grow(germinate(TENDED_SEED), genome, TENDED, BLOOM_HEALTHY_STEPS + SEED_BLOOM_STEPS)
+    assert has_seeded(seeded)
+    heir = germinate_successor(seeded)
+    assert heir.lineage_blooms == seeded.lineage_blooms + 1
+    assert heir.stats == LifeStats(), "an heir inherits the record, never the life"
+
+
+def test_serialize_round_trips_a_plant_with_an_epiphyte() -> None:
+    """A whole plant survives storage: its life statistics and its passenger too."""
+    from structure import deserialize
+
+    genome = genome_from_seed(TENDED_SEED)
+    plant = grow(_epiphyte_ready(), genome, TENDED, 30)
+    assert plant.epiphyte is not None
+    assert deserialize(serialize(plant)) == plant

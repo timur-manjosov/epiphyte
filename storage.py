@@ -142,6 +142,24 @@ class Storage:
         )
         self._connection.commit()
 
+    def save_moisture(self, state: GuildState) -> None:
+        """Update only the moisture and its timestamp, leaving the body untouched.
+
+        Watering happens on every message, and a mature plant's serialised body runs
+        to megabytes, so writing the whole row here would make the bot's hottest path
+        its most expensive one. Growth still goes through :meth:`save`.
+        """
+        self._connection.execute(
+            "UPDATE plant_state SET moisture = :moisture, last_update = :last_update "
+            "WHERE guild_id = :guild_id",
+            {
+                "guild_id": state.guild_id,
+                "moisture": state.moisture,
+                "last_update": state.last_update,
+            },
+        )
+        self._connection.commit()
+
     def close(self) -> None:
         """Close the underlying database connection."""
         self._connection.close()

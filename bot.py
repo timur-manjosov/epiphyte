@@ -7,6 +7,10 @@ updated in place, so the plant visibly grows and withers over days without any
 command. Phase 8 closes the loop: a plant that dies of a lasting drought lingers a
 few ticks as a bare grey body, then a mutated successor germinates in the same
 message — the same message showing death and rebirth, generation after generation.
+Phase 9 adds the rare states at the far end of that life: a plant kept healthy for
+long enough comes into bloom, sets seed, and — if it grows very old on a channel
+that never lets it go — takes on an epiphyte. The tick surfaces all of it; there is
+still nothing to command.
 
 Each guild binds a channel with ``/epiphyte-channel``; every message there
 passively waters the plant, and silence lets its moisture decay over days. The
@@ -98,12 +102,32 @@ class WateringWindow:
     count: int
 
 
+def describe_milestones(plant: structure.Structure, moisture_value: float) -> str:
+    """Name the rare states the plant is showing, or an empty string for none."""
+    marks = []
+    if structure.is_blooming(plant, moisture_value):
+        marks.append("🌸 in bloom")
+    if structure.has_seeded(plant):
+        marks.append("🌰 seeded")
+    if plant.epiphyte is not None:
+        marks.append("🌿 epiphyte")
+    return " · ".join(marks)
+
+
+def describe_lineage(plant: structure.Structure) -> str:
+    """Say where the plant stands in its line, and how much of that line flowered."""
+    if plant.lineage_blooms:
+        return f"{plant.generation} · {plant.lineage_blooms} flowered before it"
+    return str(plant.generation)
+
+
 def build_plant_embed(moisture_value: float, plant: structure.Structure) -> discord.Embed:
     """Build the Nord-themed embed framing the plant image, values and lineage.
 
     A living plant shows its moisture, stage and age; a fully dead one shows that
-    it has died and a successor is coming. Both show the generation, so the plant's
-    lineage is visible as it dies and is reborn.
+    it has died and a successor is coming. Both show the lineage, so the plant's
+    descent stays visible as it dies and is reborn, and both name whatever rare
+    states the body is carrying — a bloom, the seed it has set, an epiphyte.
     """
     if structure.is_dead(plant):
         embed = discord.Embed(title="🥀 The plant has died", color=DEAD_EMBED_COLOR)
@@ -111,11 +135,18 @@ def build_plant_embed(moisture_value: float, plant: structure.Structure) -> disc
         embed.add_field(name="Lived", value=f"{plant.step_count} steps")
     else:
         plant_stage = moisture.stage(moisture_value)
-        embed = discord.Embed(title="🌱 The plant", color=STAGE_COLORS[plant_stage])
+        blooming = structure.is_blooming(plant, moisture_value)
+        embed = discord.Embed(
+            title="🌸 The plant is in bloom" if blooming else "🌱 The plant",
+            color=STAGE_COLORS[plant_stage],
+        )
         embed.add_field(name="Moisture", value=f"{moisture_value:.0%}")
         embed.add_field(name="Stage", value=STAGE_LABELS[plant_stage])
         embed.add_field(name="Age", value=f"{plant.step_count} steps")
-    embed.add_field(name="Generation", value=str(plant.generation))
+    embed.add_field(name="Generation", value=describe_lineage(plant))
+    milestones = describe_milestones(plant, moisture_value)
+    if milestones:
+        embed.add_field(name="Milestones", value=milestones, inline=False)
     embed.set_image(url=f"attachment://{PLANT_IMAGE_FILENAME}")
     return embed
 
@@ -184,6 +215,17 @@ class EpiphyteClient(discord.Client):
         if self._storage is not None:
             self._storage.save(state)
 
+    def _store_watering(self, state: storage.GuildState) -> None:
+        """Persist a watering, which moves the moisture but never the body.
+
+        Kept apart from :meth:`_store` because this runs on every message, while an
+        old plant's body is large enough that writing it out each time would cost
+        real work in the one place the bot must stay cheap.
+        """
+        self._states[state.guild_id] = state
+        if self._storage is not None:
+            self._storage.save_moisture(state)
+
     def state(self, guild_id: int) -> storage.GuildState | None:
         """Return a guild's plant state, or ``None`` if it has no plant yet."""
         return self._states.get(guild_id)
@@ -232,7 +274,9 @@ class EpiphyteClient(discord.Client):
         self._windows[(guild_id, user_id)] = WateringWindow(new_start, new_count)
 
         current = moisture.decay(state.moisture, now - state.last_update)
-        self._store(replace(state, moisture=moisture.water(current, amount), last_update=now))
+        self._store_watering(
+            replace(state, moisture=moisture.water(current, amount), last_update=now)
+        )
 
     def advance_life(self, guild_id: int, now: float) -> None:
         """Advance one guild's plant by a single life-step (the tick's core).
