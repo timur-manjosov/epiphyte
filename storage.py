@@ -36,6 +36,10 @@ class GuildState:
     a successor germinates. ``channel_id`` is the display channel, or ``None``
     until one is chosen; ``message_id`` is the living plant message the bot edits
     in place each tick, or ``None`` until it has been posted.
+    ``channel_unreachable_since`` is the Unix time the bound channel first became
+    unresolvable (deleted, or the bot lost access), or ``None`` while it is
+    reachable — set and cleared by the living-message I/O in ``bot.py``, never by
+    the pure logic.
     """
 
     guild_id: int
@@ -45,6 +49,7 @@ class GuildState:
     channel_id: int | None
     message_id: int | None
     dead_ticks: int = 0
+    channel_unreachable_since: float | None = None
 
 
 class Storage:
@@ -76,7 +81,8 @@ class Storage:
                 last_update   REAL    NOT NULL,
                 channel_id    INTEGER,
                 message_id    INTEGER,
-                dead_ticks    INTEGER NOT NULL DEFAULT 0
+                dead_ticks    INTEGER NOT NULL DEFAULT 0,
+                channel_unreachable_since REAL
             )
             """
         )
@@ -90,13 +96,18 @@ class Storage:
             self._connection.execute(
                 "ALTER TABLE plant_state ADD COLUMN dead_ticks INTEGER NOT NULL DEFAULT 0"
             )
+        # Migrate databases that predate the unreachable-channel timestamp.
+        if "channel_unreachable_since" not in present:
+            self._connection.execute(
+                "ALTER TABLE plant_state ADD COLUMN channel_unreachable_since REAL"
+            )
         self._connection.commit()
 
     def load_all(self) -> dict[int, GuildState]:
         """Load every guild's state into a dict keyed by guild id."""
         rows = self._connection.execute(
             "SELECT guild_id, structure, moisture, last_update, channel_id, "
-            "message_id, dead_ticks FROM plant_state"
+            "message_id, dead_ticks, channel_unreachable_since FROM plant_state"
         ).fetchall()
         return {
             row["guild_id"]: GuildState(
@@ -107,6 +118,7 @@ class Storage:
                 channel_id=row["channel_id"],
                 message_id=row["message_id"],
                 dead_ticks=row["dead_ticks"],
+                channel_unreachable_since=row["channel_unreachable_since"],
             )
             for row in rows
         }
@@ -117,11 +129,13 @@ class Storage:
             """
             INSERT INTO plant_state (
                 guild_id, seed, structure, step_count, generation,
-                moisture, last_update, channel_id, message_id, dead_ticks
+                moisture, last_update, channel_id, message_id, dead_ticks,
+                channel_unreachable_since
             )
             VALUES (
                 :guild_id, :seed, :structure, :step_count, :generation,
-                :moisture, :last_update, :channel_id, :message_id, :dead_ticks
+                :moisture, :last_update, :channel_id, :message_id, :dead_ticks,
+                :channel_unreachable_since
             )
             ON CONFLICT(guild_id) DO UPDATE SET
                 seed        = excluded.seed,
@@ -132,7 +146,8 @@ class Storage:
                 last_update = excluded.last_update,
                 channel_id  = excluded.channel_id,
                 message_id  = excluded.message_id,
-                dead_ticks  = excluded.dead_ticks
+                dead_ticks  = excluded.dead_ticks,
+                channel_unreachable_since = excluded.channel_unreachable_since
             """,
             {
                 "guild_id": state.guild_id,
@@ -145,6 +160,7 @@ class Storage:
                 "channel_id": state.channel_id,
                 "message_id": state.message_id,
                 "dead_ticks": state.dead_ticks,
+                "channel_unreachable_since": state.channel_unreachable_since,
             },
         )
         self._connection.commit()

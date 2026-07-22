@@ -62,7 +62,8 @@ GUILD_ENV = "EPIPHYTE_GUILD_ID"
 #: plant exactly one step, so this constant *is* the real duration of one growth
 #: step — a big tree is the reward of weeks of ticks, not one busy evening. It sits
 #: far above Discord's message-edit rate limit, so re-rendering once per tick never
-#: edits too often. Adjustable during Phase 8 calibration.
+#: edits too often. Deliberately left unchanged through Phase 8 and 9: a week's worth
+#: of growth should cost a week's worth of ticks, not a debugging session's worth.
 TICK_INTERVAL_SECONDS = 60 * 60  # 1 hour
 
 #: How many ticks a fully dead plant lingers as a bare grey body before a
@@ -174,18 +175,19 @@ def build_plant_embed(moisture_value: float, plant: structure.Structure) -> disc
     return embed
 
 
-def build_help_embed() -> discord.Embed:
-    """Build the Nord-themed embed explaining the project and its commands.
+def build_help_pages() -> list[discord.Embed]:
+    """Build the /help embeds, one per page, in display order.
 
     The cited durations are computed from :mod:`moisture`'s own constants rather
     than restated as free-standing numbers, so a future recalibration keeps this
-    text honest without a separate edit.
+    text honest without a separate edit. Split across pages instead of one long
+    embed so each page stays a short read; :class:`HelpView` pages through them.
     """
     tick_hours = TICK_INTERVAL_SECONDS // 3600
     hour_word = "hour" if tick_hours == 1 else "hours"
     wither_days = round(3 * moisture.DEFAULT_HALF_LIFE_SECONDS / (24 * 60 * 60))
 
-    embed = discord.Embed(
+    overview = discord.Embed(
         title="🌱 Epiphyte",
         description=(
             "A single plant lives in this server, shaped by its whole history rather "
@@ -198,26 +200,99 @@ def build_help_embed() -> discord.Embed:
         ),
         color=HELP_EMBED_COLOR,
     )
-    embed.add_field(
-        name="Commands",
-        value=(
+
+    commands_page = discord.Embed(
+        title="Commands",
+        description=(
             "`/epiphyte-channel <channel>` — bind or move the plant to a channel "
-            "(germinates it on first use)\n"
-            "`/plant` — get a private, on-the-spot look at your plant right now"
+            "(on a server's first use, this asks for confirmation before it "
+            "germinates anything)\n\n"
+            "`/plant` — a private, on-the-spot look at your plant right now\n\n"
+            "`/help` — this explanation"
         ),
-        inline=False,
+        color=HELP_EMBED_COLOR,
     )
-    embed.add_field(
-        name="On its own time",
-        value=(
+
+    on_its_own_time = discord.Embed(
+        title="On Its Own Time",
+        description=(
             "Growth, blooming, seeding and the rare secondary epiphyte all happen by "
             "themselves as the plant lives — none of it can be triggered on demand. "
             "Check back after some real activity, not right after a test message."
         ),
-        inline=False,
+        color=HELP_EMBED_COLOR,
     )
-    embed.add_field(name="Source", value=f"[Open source, MIT licensed]({REPO_URL})", inline=False)
-    return embed
+
+    persistence = discord.Embed(
+        title="Persistence & Permanence",
+        description=(
+            "Each server's plant is permanent for as long as the server has one: "
+            "kicking the bot and re-inviting it later does **not** reset anything. "
+            "State lives independently of the bot's membership, so the plant just "
+            "picks up where it left off. There is deliberately no delete or reset "
+            "command — that would make removing and re-adding the bot a loophole."
+        ),
+        color=HELP_EMBED_COLOR,
+    )
+
+    pages = [overview, commands_page, on_its_own_time, persistence]
+    for index, page in enumerate(pages, start=1):
+        page.set_footer(text=f"Page {index}/{len(pages)} · Open source, MIT licensed · {REPO_URL}")
+    return pages
+
+
+class HelpView(discord.ui.View):
+    """Previous/Next pagination for /help, usable only by the person who ran it.
+
+    Buttons are disabled in place once the view times out, instead of being left
+    clickable but silently dead.
+    """
+
+    def __init__(self, pages: list[discord.Embed], author_id: int) -> None:
+        super().__init__(timeout=180)
+        self._pages = pages
+        self._author_id = author_id
+        self._index = 0
+        self.message: discord.Message | None = None
+        self._update_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only the person who ran ``/help`` may page through it."""
+        if interaction.user.id != self._author_id:
+            await interaction.response.send_message(
+                "Only the person who ran `/help` can page through this.", ephemeral=True
+            )
+            return False
+        return True
+
+    def _update_buttons(self) -> None:
+        """Disable Previous/Next at the first/last page instead of wrapping."""
+        self.previous_page.disabled = self._index == 0
+        self.next_page.disabled = self._index == len(self._pages) - 1
+
+    async def on_timeout(self) -> None:
+        """Grey out both buttons on the original message once the view expires."""
+        self.previous_page.disabled = True
+        self.next_page.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Step back one page."""
+        self._index -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._pages[self._index], view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Step forward one page."""
+        self._index += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._pages[self._index], view=self)
 
 
 class EpiphyteClient(discord.Client):
@@ -326,29 +401,37 @@ class EpiphyteClient(discord.Client):
         """Return a guild's plant state, or ``None`` if it has no plant yet."""
         return self._states.get(guild_id)
 
-    async def set_channel(self, guild_id: int, channel_id: int, now: float) -> None:
-        """Bind the guild's plant to a channel.
+    async def germinate_plant(self, guild_id: int, channel_id: int, now: float) -> None:
+        """Germinate a guild's very first plant, bound to the given channel.
 
-        On a guild's first contact this germinates a fresh plant from a new random
-        seed — the seed is what makes each server's plant an individual. Rebinding
-        to a *different* channel clears the tracked living message so a fresh one
-        is posted there; rebinding to the same channel is a no-op.
+        A fresh random seed makes this server's plant an individual. Only ever
+        called after the user has confirmed the persistence notice shown by
+        ``/epiphyte-channel`` on a guild's first use — the rebind case in
+        :meth:`set_channel` never reaches here.
+        """
+        seed = random.getrandbits(63)
+        await self._store(
+            storage.GuildState(
+                guild_id=guild_id,
+                structure=structure.germinate(seed),
+                moisture=moisture.MIN_MOISTURE,
+                last_update=now,
+                channel_id=channel_id,
+                message_id=None,
+                dead_ticks=0,
+            )
+        )
+
+    async def set_channel(self, guild_id: int, channel_id: int) -> None:
+        """Rebind an already-germinated guild's plant to a (possibly new) channel.
+
+        Clears the tracked living message so a fresh one is posted in the new
+        channel; rebinding to the same channel is a no-op. A guild with no plant
+        yet is a no-op here too — first-time germination is a separate, confirmed
+        step (see :meth:`germinate_plant`), not something this silently does.
         """
         state = self._states.get(guild_id)
-        if state is None:
-            seed = random.getrandbits(63)
-            await self._store(
-                storage.GuildState(
-                    guild_id=guild_id,
-                    structure=structure.germinate(seed),
-                    moisture=moisture.MIN_MOISTURE,
-                    last_update=now,
-                    channel_id=channel_id,
-                    message_id=None,
-                    dead_ticks=0,
-                )
-            )
-        elif state.channel_id != channel_id:
+        if state is not None and state.channel_id != channel_id:
             await self._store(replace(state, channel_id=channel_id, message_id=None))
 
     async def water_plant(self, guild_id: int, user_id: int, now: float) -> None:
@@ -527,6 +610,8 @@ class EpiphyteClient(discord.Client):
         posted and its id stored. Called by the tick and after a channel is bound.
         Holds the guild's :meth:`_message_lock` for its whole body, so it can
         never race a concurrent :meth:`reanchor_channel_message` into posting twice.
+        Records when the bound channel first becomes unreachable, and clears that
+        record once it resolves again — growth itself is unaffected either way.
         """
         async with self._message_lock(guild_id):
             state = self._states.get(guild_id)
@@ -534,7 +619,12 @@ class EpiphyteClient(discord.Client):
                 return
             channel = await self._text_channel(state.channel_id)
             if channel is None:
+                if state.channel_unreachable_since is None:
+                    await self._store(replace(state, channel_unreachable_since=time.time()))
                 return  # channel unreachable right now; the next tick will retry
+            if state.channel_unreachable_since is not None:
+                state = replace(state, channel_unreachable_since=None)
+                await self._store(state)
             png = await self._render_bytes(state.structure, state.moisture)
             embed = self._embed_for(state)
 
@@ -566,7 +656,8 @@ class EpiphyteClient(discord.Client):
         Best-effort deletes the current living message and posts a fresh one, so a
         plant that has scrolled out of view returns to where people are talking.
         Shares :meth:`refresh_channel_message`'s per-guild lock, so the two can
-        never both find no tracked message and each post their own.
+        never both find no tracked message and each post their own. Records or
+        clears the unreachable-channel timestamp exactly as its sibling does.
         """
         async with self._message_lock(guild_id):
             state = self._states.get(guild_id)
@@ -574,7 +665,12 @@ class EpiphyteClient(discord.Client):
                 return
             channel = await self._text_channel(state.channel_id)
             if channel is None:
+                if state.channel_unreachable_since is None:
+                    await self._store(replace(state, channel_unreachable_since=time.time()))
                 return
+            if state.channel_unreachable_since is not None:
+                state = replace(state, channel_unreachable_since=None)
+                await self._store(state)
             if state.message_id is not None:
                 await self._delete_message(channel, state.message_id)
             png = await self._render_bytes(state.structure, state.moisture)
@@ -641,7 +737,9 @@ async def plant(interaction: discord.Interaction) -> None:
     Growth is the metabolic tick's job now, so this never grows the plant. It
     renders the current state (moisture decayed to this moment, for display) as an
     ephemeral snapshot for the caller, and if the living channel message has
-    scrolled out of view it quietly moves it back to the bottom.
+    scrolled out of view it quietly moves it back to the bottom. If the bound
+    channel has gone unreachable, this is also the one place that says so — the
+    living channel message itself can hardly speak up when its channel is gone.
     """
     guild_id = await require_guild(interaction)
     if guild_id is None:
@@ -660,8 +758,16 @@ async def plant(interaction: discord.Interaction) -> None:
     genome = structure.genome_from_seed(state.structure.seed)
     buffer = await asyncio.to_thread(render.render, state.structure, display_moisture, genome)
     embed = build_plant_embed(display_moisture, state.structure)
+    content = None
+    if state.channel_unreachable_since is not None:
+        content = (
+            "The plant itself is fine and still growing — it just looks like its "
+            "bound channel isn't there anymore. Run `/epiphyte-channel` again to "
+            "give it a new home."
+        )
     try:
         await interaction.response.send_message(
+            content=content,
             embed=embed,
             file=discord.File(buffer, filename=PLANT_IMAGE_FILENAME),
             ephemeral=True,
@@ -674,6 +780,45 @@ async def plant(interaction: discord.Interaction) -> None:
         await client.reanchor_channel_message(guild_id)
 
 
+class ConfirmGerminationView(discord.ui.View):
+    """One-time confirmation gate before a guild's first, permanent plant germinates.
+
+    Only ever shown from the ``client.state(guild_id) is None`` branch of
+    ``/epiphyte-channel`` — rebinding an existing plant to a new channel never
+    goes through this view, and never re-triggers this notice. Silently expires
+    with no plant created if nobody presses the button.
+    """
+
+    def __init__(self, guild_id: int, channel: discord.TextChannel, author_id: int) -> None:
+        super().__init__(timeout=180)
+        self._guild_id = guild_id
+        self._channel = channel
+        self._author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only the person who ran the command may press the confirm button."""
+        if interaction.user.id != self._author_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can confirm it.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Understood — plant it", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Germinate the plant and post its living message in the chosen channel."""
+        await client.germinate_plant(self._guild_id, self._channel.id, time.time())
+        self.stop()
+        await interaction.response.edit_message(
+            content=(
+                f"🌱 The plant now lives in {self._channel.mention}. Activity anywhere "
+                "in this server waters it, and it will grow there on its own over time."
+            ),
+            view=None,
+        )
+        await client.refresh_channel_message(self._guild_id)
+
+
 @client.tree.command(
     name="epiphyte-channel",
     description="Choose the channel the plant is displayed in.",
@@ -682,13 +827,36 @@ async def plant(interaction: discord.Interaction) -> None:
 async def epiphyte_channel(
     interaction: discord.Interaction, channel: discord.TextChannel
 ) -> None:
-    """Bind the plant's display channel and post its living message there."""
+    """Bind the plant's display channel and post its living message there.
+
+    A guild's very first binding does not germinate on the spot: it shows a
+    one-time persistence notice with a confirm button (see
+    :class:`ConfirmGerminationView`) so nobody creates a permanent plant by
+    accident. Rebinding an already-germinated plant to a new channel needs no
+    such confirmation and proceeds immediately, as before.
+    """
     guild_id = await require_guild(interaction)
     if guild_id is None:
         return
 
+    if client.state(guild_id) is None:
+        await interaction.response.send_message(
+            "🌱 This server doesn't have a plant yet. Starting one here creates "
+            "**one permanent plant tied to this server's id** — every message sent "
+            "anywhere in the server waters it, and it grows into a shape drawn from "
+            "its own history over time.\n\n"
+            "Kicking the bot and re-inviting it later does **not** reset it: the "
+            "state lives independently of the bot's membership, so the plant just "
+            "picks up where it left off. There is deliberately no delete or reset "
+            "command.\n\n"
+            f"Plant it in {channel.mention}?",
+            view=ConfirmGerminationView(guild_id, channel, interaction.user.id),
+            ephemeral=True,
+        )
+        return
+
     previous = client.state(guild_id)
-    await client.set_channel(guild_id, channel.id, time.time())
+    await client.set_channel(guild_id, channel.id)
     try:
         await interaction.response.send_message(
             f"🌱 The plant now lives in {channel.mention}. Activity anywhere in this "
@@ -714,12 +882,15 @@ async def epiphyte_channel(
     description="Explain what Epiphyte is and what its commands do.",
 )
 async def help_command(interaction: discord.Interaction) -> None:
-    """Send a private embed explaining the project's mechanic and commands."""
+    """Send a private, paginated explanation of the project's mechanic and commands."""
     guild_id = await require_guild(interaction)
     if guild_id is None:
         return
+    pages = build_help_pages()
+    view = HelpView(pages, interaction.user.id)
     try:
-        await interaction.response.send_message(embed=build_help_embed(), ephemeral=True)
+        await interaction.response.send_message(embed=pages[0], view=view, ephemeral=True)
+        view.message = await interaction.original_response()
     except (discord.Forbidden, discord.HTTPException):
         _log.exception("Failed to send the /help embed for guild %s.", guild_id)
 
