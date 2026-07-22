@@ -91,6 +91,12 @@ STAGE_LABELS: dict[Stage, str] = {
 #: Attachment filename referenced by the embed's image.
 PLANT_IMAGE_FILENAME = "plant.png"
 
+#: Nord accent used for the /help embed — informational, not a growth stage.
+HELP_EMBED_COLOR = STAGE_COLORS[Stage.THRIVING]
+
+#: Project repository, credited once in /help.
+REPO_URL = "https://github.com/timur-manjosov/epiphyte"
+
 #: How often the bot's presence rotates to its next in-fiction status line.
 PRESENCE_ROTATE_MINUTES = 10
 
@@ -165,6 +171,52 @@ def build_plant_embed(moisture_value: float, plant: structure.Structure) -> disc
     if milestones:
         embed.add_field(name="Milestones", value=milestones, inline=False)
     embed.set_image(url=f"attachment://{PLANT_IMAGE_FILENAME}")
+    return embed
+
+
+def build_help_embed() -> discord.Embed:
+    """Build the Nord-themed embed explaining the project and its commands.
+
+    The cited durations are computed from :mod:`moisture`'s own constants rather
+    than restated as free-standing numbers, so a future recalibration keeps this
+    text honest without a separate edit.
+    """
+    tick_hours = TICK_INTERVAL_SECONDS // 3600
+    hour_word = "hour" if tick_hours == 1 else "hours"
+    wither_days = round(3 * moisture.DEFAULT_HALF_LIFE_SECONDS / (24 * 60 * 60))
+
+    embed = discord.Embed(
+        title="🌱 Epiphyte",
+        description=(
+            "A single plant lives in this server, shaped by its whole history rather "
+            "than any one moment. Every message sent anywhere in the server waters it "
+            f"a little; it grows on its own about once every {tick_hours} {hour_word}, "
+            f"and roughly {wither_days} days of real silence dry it from thriving back "
+            "down to withered. Neglect that lasts long enough leaves permanent scars "
+            "and can kill it outright — but a mutated successor always regrows in its "
+            "place. Nothing here can be farmed, and there is no leaderboard."
+        ),
+        color=HELP_EMBED_COLOR,
+    )
+    embed.add_field(
+        name="Commands",
+        value=(
+            "`/epiphyte-channel <channel>` — bind or move the plant to a channel "
+            "(germinates it on first use)\n"
+            "`/plant` — get a private, on-the-spot look at your plant right now"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="On its own time",
+        value=(
+            "Growth, blooming, seeding and the rare secondary epiphyte all happen by "
+            "themselves as the plant lives — none of it can be triggered on demand. "
+            "Check back after some real activity, not right after a test message."
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Source", value=f"[Open source, MIT licensed]({REPO_URL})", inline=False)
     return embed
 
 
@@ -563,6 +615,22 @@ class EpiphyteClient(discord.Client):
 client = EpiphyteClient()
 
 
+async def require_guild(interaction: discord.Interaction) -> int | None:
+    """Return the interaction's guild id, or reply with the DM error and ``None``.
+
+    Every slash command is guild-only, since a server is what the plant belongs
+    to. Shared so the three commands give the exact same ephemeral refusal
+    instead of drifting apart over time.
+    """
+    if interaction.guild_id is not None:
+        return interaction.guild_id
+    await interaction.response.send_message(
+        "Epiphyte only grows on servers, not in direct messages.",
+        ephemeral=True,
+    )
+    return None
+
+
 @client.tree.command(
     name="plant",
     description="Show the plant right now, and bring it back into view.",
@@ -575,13 +643,10 @@ async def plant(interaction: discord.Interaction) -> None:
     ephemeral snapshot for the caller, and if the living channel message has
     scrolled out of view it quietly moves it back to the bottom.
     """
-    if interaction.guild_id is None:
-        await interaction.response.send_message(
-            "Epiphyte only grows on servers, not in direct messages.",
-            ephemeral=True,
-        )
+    guild_id = await require_guild(interaction)
+    if guild_id is None:
         return
-    state = client.state(interaction.guild_id)
+    state = client.state(guild_id)
     if state is None or state.channel_id is None:
         await interaction.response.send_message(
             "No channel set yet. Use `/epiphyte-channel` to choose which channel "
@@ -602,11 +667,11 @@ async def plant(interaction: discord.Interaction) -> None:
             ephemeral=True,
         )
     except (discord.Forbidden, discord.HTTPException):
-        _log.exception("Failed to send the /plant snapshot for guild %s.", interaction.guild_id)
+        _log.exception("Failed to send the /plant snapshot for guild %s.", guild_id)
         return
 
     if client.living_message_needs_reanchor(state):
-        await client.reanchor_channel_message(interaction.guild_id)
+        await client.reanchor_channel_message(guild_id)
 
 
 @client.tree.command(
@@ -618,15 +683,12 @@ async def epiphyte_channel(
     interaction: discord.Interaction, channel: discord.TextChannel
 ) -> None:
     """Bind the plant's display channel and post its living message there."""
-    if interaction.guild_id is None:
-        await interaction.response.send_message(
-            "Epiphyte only grows on servers, not in direct messages.",
-            ephemeral=True,
-        )
+    guild_id = await require_guild(interaction)
+    if guild_id is None:
         return
 
-    previous = client.state(interaction.guild_id)
-    await client.set_channel(interaction.guild_id, channel.id, time.time())
+    previous = client.state(guild_id)
+    await client.set_channel(guild_id, channel.id, time.time())
     try:
         await interaction.response.send_message(
             f"🌱 The plant now lives in {channel.mention}. Activity anywhere in this "
@@ -634,7 +696,7 @@ async def epiphyte_channel(
             ephemeral=True,
         )
     except (discord.Forbidden, discord.HTTPException):
-        _log.exception("Failed to confirm channel binding for guild %s.", interaction.guild_id)
+        _log.exception("Failed to confirm channel binding for guild %s.", guild_id)
 
     # If the plant moved channels, remove the stale living message it left behind.
     if (
@@ -644,7 +706,22 @@ async def epiphyte_channel(
     ):
         await client._remove_stale_message(previous.channel_id, previous.message_id)
     # Post (or refresh) the living message in the now-current channel.
-    await client.refresh_channel_message(interaction.guild_id)
+    await client.refresh_channel_message(guild_id)
+
+
+@client.tree.command(
+    name="help",
+    description="Explain what Epiphyte is and what its commands do.",
+)
+async def help_command(interaction: discord.Interaction) -> None:
+    """Send a private embed explaining the project's mechanic and commands."""
+    guild_id = await require_guild(interaction)
+    if guild_id is None:
+        return
+    try:
+        await interaction.response.send_message(embed=build_help_embed(), ephemeral=True)
+    except (discord.Forbidden, discord.HTTPException):
+        _log.exception("Failed to send the /help embed for guild %s.", guild_id)
 
 
 def main() -> None:
