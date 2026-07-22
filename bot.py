@@ -794,6 +794,7 @@ class ConfirmGerminationView(discord.ui.View):
         self._guild_id = guild_id
         self._channel = channel
         self._author_id = author_id
+        self.message: discord.Message | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Only the person who ran the command may press the confirm button."""
@@ -803,6 +804,21 @@ class ConfirmGerminationView(discord.ui.View):
             )
             return False
         return True
+
+    async def on_timeout(self) -> None:
+        """Grey out the confirm button on the original message once the window expires."""
+        self.confirm.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    content=(
+                        "This confirmation window has expired and nothing was created. "
+                        "Run `/epiphyte-channel` again if you'd still like to plant one."
+                    ),
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="Understood — plant it", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -840,6 +856,7 @@ async def epiphyte_channel(
         return
 
     if client.state(guild_id) is None:
+        view = ConfirmGerminationView(guild_id, channel, interaction.user.id)
         await interaction.response.send_message(
             "🌱 This server doesn't have a plant yet. Starting one here creates "
             "**one permanent plant tied to this server's id** — every message sent "
@@ -850,9 +867,10 @@ async def epiphyte_channel(
             "picks up where it left off. There is deliberately no delete or reset "
             "command.\n\n"
             f"Plant it in {channel.mention}?",
-            view=ConfirmGerminationView(guild_id, channel, interaction.user.id),
+            view=view,
             ephemeral=True,
         )
+        view.message = await interaction.original_response()
         return
 
     previous = client.state(guild_id)
