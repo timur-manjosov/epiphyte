@@ -230,6 +230,13 @@ class Structure:
     lineage_blooms: int = 0
     stats: LifeStats = LifeStats()
     epiphyte: Epiphyte | None = None
+    #: Ids of the nodes currently in :attr:`NodeState.TIP`, in ascending order.
+    #: A cache of what a full scan of ``nodes`` for that state would find — kept
+    #: incrementally by :func:`_growth_step` so a step's cost tracks the crown's
+    #: active tip count (bounded by capacity) rather than the accumulated body
+    #: size. Not part of :func:`serialize`'s output since it is fully derived from
+    #: ``nodes``; :func:`deserialize` recomputes it once on load.
+    active_tips: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -362,6 +369,7 @@ def germinate(
         generation=generation,
         parent_seed=parent_seed,
         lineage_blooms=lineage_blooms,
+        active_tips=(0,),
     )
 
 
@@ -532,7 +540,7 @@ def _grow_tip(
     step_index: int,
     terminate_chance: float,
     rng: random.Random,
-) -> None:
+) -> list[int]:
     """Advance one active tip by one step, mutating the working ``nodes`` list.
 
     The tip always lignifies. With probability ``terminate_chance`` (only nonzero
@@ -540,34 +548,40 @@ def _grow_tip(
     the crown. Otherwise it puts out a continuation carrying the same axis bearing
     and, with a probability that decays with branch order, a side branch that sets
     out on a bearing of its own and keeps it. New node ids continue the sequence,
-    preserving the ``id == index`` invariant.
+    preserving the ``id == index`` invariant. Returns the ids of any new tip nodes
+    created (0, 1 or 2), so the caller can extend its active-tips cache without
+    rescanning the body for them.
     """
     nodes[tip.id] = replace(tip, state=NodeState.WOODY)
     if rng.random() < terminate_chance:
-        return  # capped off: this branch has a finished, lignified end
+        return []  # capped off: this branch has a finished, lignified end
 
     base_length = genome.internode_length * (LENGTH_ORDER_DECAY ** tip.order)
 
     def internode() -> float:
         return base_length * (1.0 + rng.uniform(-LENGTH_JITTER, LENGTH_JITTER))
 
+    new_tip_ids: list[int] = []
+
     continuation_angle = _nudged_angle(tip.angle, tip.axis_angle, genome, rng)
-    nodes.append(
-        _child(
-            tip, continuation_angle, tip.axis_angle, internode(), step_index, tip.order, len(nodes)
-        )
+    continuation = _child(
+        tip, continuation_angle, tip.axis_angle, internode(), step_index, tip.order, len(nodes)
     )
+    nodes.append(continuation)
+    new_tip_ids.append(continuation.id)
 
     branch_chance = genome.branch_probability * (BRANCH_ORDER_DECAY ** tip.order)
     if tip.order < MAX_ORDER and rng.random() < branch_chance:
         side = 1.0 if rng.random() < 0.5 else -1.0
         bearing = _limb_bearing(tip.axis_angle, side, genome)
         lateral_angle = _nudged_angle(bearing, bearing, genome, rng)
-        nodes.append(
-            _child(
-                tip, lateral_angle, bearing, internode(), step_index, tip.order + 1, len(nodes)
-            )
+        lateral = _child(
+            tip, lateral_angle, bearing, internode(), step_index, tip.order + 1, len(nodes)
         )
+        nodes.append(lateral)
+        new_tip_ids.append(lateral.id)
+
+    return new_tip_ids
 
 
 def _children_map(nodes: list[Node]) -> dict[int, list[int]]:
@@ -604,19 +618,33 @@ def _growth_step(
     extension_chance: float,
     capacity: int,
     step_index: int,
-) -> None:
-    """Apply one growth step: living tips may extend, branch, or cap off."""
-    tips = [node for node in nodes if node.state is NodeState.TIP]
+    active_tips: list[int],
+) -> list[int]:
+    """Apply one growth step: living tips may extend, branch, or cap off.
+
+    Iterates only ``active_tips`` — the node ids currently in :attr:`NodeState.TIP`
+    — instead of rediscovering them by scanning all of ``nodes``, since the crown's
+    tip count stays bounded by ``capacity`` however large the accumulated body
+    grows. Returns the next step's active tip ids: dormant tips keep their
+    relative order, and newly created tips are appended after them — exactly what
+    a fresh scan of ``nodes`` would produce, since every id created this step is
+    higher than every id already in ``active_tips``.
+    """
     # The termination pressure is sampled once per step from the crown size at its
     # start, so it does not depend on the order tips are visited within the step,
     # and it is zero until the crown exceeds capacity.
-    overshoot = max(0, len(tips) - capacity) / capacity
+    overshoot = max(0, len(active_tips) - capacity) / capacity
     terminate_chance = min(MAX_TERMINATION, OVERCAPACITY_PRESSURE * overshoot)
-    for tip in tips:
+    dormant: list[int] = []
+    grown: list[int] = []
+    for tip_id in active_tips:
+        tip = nodes[tip_id]
         rng = random.Random(f"{seed}:{tip.id}:{step_index}")
         if rng.random() >= extension_chance:
-            continue  # dormant this step; may grow in a later one
-        _grow_tip(tip, nodes, genome, step_index, terminate_chance, rng)
+            dormant.append(tip_id)  # dormant this step; may grow in a later one
+            continue
+        grown.extend(_grow_tip(tip, nodes, genome, step_index, terminate_chance, rng))
+    return dormant + grown
 
 
 def _dieback_step(nodes: list[Node], seed: int, vitality: float, step_index: int) -> None:
@@ -711,20 +739,25 @@ def _advance_epiphyte(
     genome = epiphyte_genome(host_seed)
     body = epiphyte.structure
     nodes = list(body.nodes)
+    active_tips = list(body.active_tips)
     if vitality < DIEBACK_MOISTURE_THRESHOLD:
         _dieback_step(nodes, body.seed, vitality, body.step_count)
+        active_tips = [tid for tid in active_tips if nodes[tid].state is NodeState.TIP]
     else:
-        _growth_step(
+        active_tips = _growth_step(
             nodes,
             genome,
             body.seed,
             extension_chance * EPIPHYTE_PACE,
             _capacity(genome),
             body.step_count,
+            active_tips,
         )
     return replace(
         epiphyte,
-        structure=replace(body, nodes=tuple(nodes), step_count=body.step_count + 1),
+        structure=replace(
+            body, nodes=tuple(nodes), step_count=body.step_count + 1, active_tips=tuple(active_tips)
+        ),
     )
 
 
@@ -758,6 +791,7 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
     capacity = _capacity(genome)
     parched = vitality < DIEBACK_MOISTURE_THRESHOLD
     nodes = list(structure.nodes)
+    active_tips = list(structure.active_tips)
     step_index = structure.step_count
     stats = structure.stats
     epiphyte = structure.epiphyte
@@ -765,8 +799,11 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
     for _ in range(max(0, steps)):
         if parched:
             _dieback_step(nodes, structure.seed, vitality, step_index)
+            active_tips = [tid for tid in active_tips if nodes[tid].state is NodeState.TIP]
         else:
-            _growth_step(nodes, genome, structure.seed, extension_chance, capacity, step_index)
+            active_tips = _growth_step(
+                nodes, genome, structure.seed, extension_chance, capacity, step_index, active_tips
+            )
         stats = _milestone_step(stats, len(nodes), vitality)
         step_index += 1
 
@@ -784,6 +821,7 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
         lineage_blooms=structure.lineage_blooms,
         stats=stats,
         epiphyte=epiphyte,
+        active_tips=tuple(active_tips),
     )
 
 
@@ -860,6 +898,9 @@ def deserialize(data: dict) -> Structure:
         generation=data.get("generation", 1),
         parent_seed=data.get("parent_seed"),
         lineage_blooms=data.get("lineage_blooms", 0),
+        # Not stored: derived once here from the loaded nodes, then kept
+        # incrementally by grow() for the rest of this structure's life.
+        active_tips=tuple(node.id for node in nodes if node.state is NodeState.TIP),
         stats=LifeStats(
             healthy_steps=stats.get("healthy_steps", 0),
             bloom_steps=stats.get("bloom_steps", 0),

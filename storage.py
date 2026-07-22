@@ -2,8 +2,8 @@
 
 One row per guild holds the plant's whole persistent state: its seed, its
 serialised body, its age and generation, its moisture with the timestamp that
-moisture was sampled at, how many ticks it has lain dead, the channel it is
-watered from, and the id of the living plant message the bot keeps updated. All
+moisture was sampled at, how many ticks it has lain dead, the channel its
+living message is displayed in, and the id of that message. All
 database access is isolated here; the pure logic never touches it. SQLite ships
 with the Python standard library, so this adds no dependency.
 
@@ -33,7 +33,7 @@ class GuildState:
     count and lineage). ``moisture`` is the value sampled at ``last_update`` (a
     Unix time, so it stays comparable across restarts). ``dead_ticks`` counts how
     many ticks the plant has been fully dead, driving the brief dead phase before
-    a successor germinates. ``channel_id`` is the watering channel, or ``None``
+    a successor germinates. ``channel_id`` is the display channel, or ``None``
     until one is chosen; ``message_id`` is the living plant message the bot edits
     in place each tick, or ``None`` until it has been posted.
     """
@@ -51,8 +51,15 @@ class Storage:
     """Thin wrapper around a SQLite connection holding the guild states."""
 
     def __init__(self, path: str = DEFAULT_DB_PATH) -> None:
-        self._connection = sqlite3.connect(path)
+        # bot.py dispatches every write through asyncio.to_thread, off the event
+        # loop's own thread, serialized by its own lock — check_same_thread=False
+        # lets that worker thread touch the connection at all.
+        self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
+        # WAL: readers and a writer no longer block each other, and an ordinary
+        # commit appends to the log instead of always syncing the whole file —
+        # the standard choice for a long-running process with frequent writes.
+        self._connection.execute("PRAGMA journal_mode=WAL")
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -159,6 +166,16 @@ class Storage:
             },
         )
         self._connection.commit()
+
+    def vacuum(self) -> None:
+        """Rebuild the database file, reclaiming space a dead generation freed.
+
+        ``VACUUM`` rewrites the whole file, so the caller must only run this at a
+        naturally infrequent point — a generational reseed, not a timer or every
+        save — which is exactly when a large structure blob's freed pages become
+        worth returning to the OS.
+        """
+        self._connection.execute("VACUUM")
 
     def close(self) -> None:
         """Close the underlying database connection."""

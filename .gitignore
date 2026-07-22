@@ -12,3 +12,6 @@ env/
 # Datenbanken (ab Phase 3)
 *.db
 *.sqlite3
+# WAL-Sidecar-Dateien (ab Phase mit Storage-Wartung): *.db-wal, *.db-shm, ...
+*.db-*
+*.sqlite3-*

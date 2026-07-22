@@ -9,6 +9,8 @@ thresholds on the accumulated life statistics rather than stages on a timer.
 """
 
 import dataclasses
+import hashlib
+import json
 
 from structure import (
     BLOOM_HEALTHY_STEPS,
@@ -548,3 +550,31 @@ def test_serialize_round_trips_a_plant_with_an_epiphyte() -> None:
     plant = grow(_epiphyte_ready(), genome, TENDED, 30)
     assert plant.epiphyte is not None
     assert deserialize(serialize(plant)) == plant
+
+
+# --- Regression: the active-tips cache must not change growth output --------
+
+
+def _hash(plant) -> str:
+    """A stable fingerprint of a structure's serialised form."""
+    return hashlib.sha256(json.dumps(serialize(plant), sort_keys=True).encode()).hexdigest()
+
+
+def test_growth_output_is_unchanged_by_the_active_tips_cache() -> None:
+    """The active-tips bookkeeping is a pure perf cache: it must not alter output.
+
+    ``_growth_step`` iterates ``Structure.active_tips`` instead of rescanning every
+    node for ``NodeState.TIP`` each step, so a step's cost tracks the crown's active
+    tip count rather than the accumulated body size. These hashes were captured
+    from the prior full-scan implementation, for a small tree and a large/complex
+    one (grown large, aged and flowered enough to carry an epiphyte, i.e. it also
+    exercises dieback-adjacent bookkeeping and :func:`_advance_epiphyte`). Iterating
+    only the active tips must still produce byte-for-byte identical structures.
+    """
+    small = _grown(99, 0.85, 25)
+    assert _hash(small) == "c186fdaade4164b4fd25fd594d2392b92adcc59fb1593a7d3619239384cbee54"
+
+    genome = genome_from_seed(TENDED_SEED)
+    large = grow(_epiphyte_ready(), genome, TENDED, 100)
+    assert large.epiphyte is not None, "the large fixture should have settled an epiphyte"
+    assert _hash(large) == "9e30ac2520d2946b4e9de0f637601bd4f7dfbd8bfa625b7f78522d7bc7569e48"

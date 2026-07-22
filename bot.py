@@ -1,4 +1,4 @@
-"""Epiphyte — a Discord bot that grows a single plant in one channel.
+"""Epiphyte — a Discord bot that grows a single plant per server.
 
 Phase 6 (its own life): the plant now lives in the channel instead of being
 summoned on demand. A recurring metabolic tick — the plant's heartbeat — advances
@@ -12,12 +12,13 @@ long enough comes into bloom, sets seed, and — if it grows very old on a chann
 that never lets it go — takes on an epiphyte. The tick surfaces all of it; there is
 still nothing to command.
 
-Each guild binds a channel with ``/epiphyte-channel``; every message there
-passively waters the plant, and silence lets its moisture decay over days. The
-tick grows one step per beat, gated by the current moisture, so an active channel
-drives the plant forward and a quiet one lets it stagnate. ``/plant`` no longer
-grows anything: it shows an immediate personal snapshot and brings the living
-message back into view if it has scrolled away.
+Each guild binds a channel with ``/epiphyte-channel`` — that only decides where
+the living message is shown. Once a guild has a plant, every message anywhere in
+that guild passively waters it, and silence lets its moisture decay over days.
+The tick grows one step per beat, gated by the current moisture, so a guild that
+is active anywhere drives its plant forward and a quiet one lets it stagnate.
+``/plant`` no longer grows anything: it shows an immediate personal snapshot and
+brings the living message back into view if it has scrolled away.
 
 Growth is gated by moisture, and moisture is subject to the per-person
 diminishing returns from Phase 3, so spam cannot farm a big tree.
@@ -36,11 +37,13 @@ import logging
 import os
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import discord
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from discord import app_commands
+from discord.ext import tasks
 
 import moisture
 import render
@@ -87,6 +90,20 @@ STAGE_LABELS: dict[Stage, str] = {
 
 #: Attachment filename referenced by the embed's image.
 PLANT_IMAGE_FILENAME = "plant.png"
+
+#: How often the bot's presence rotates to its next in-fiction status line.
+PRESENCE_ROTATE_MINUTES = 10
+
+#: Rotating status lines the bot "speaks" through its presence. Each pairs an
+#: activity type with either a fixed string or a callable that builds one from
+#: live data already on hand (e.g. the guild count) — no extra lookups needed.
+PRESENCE_ACTIVITIES: tuple[tuple[discord.ActivityType, str | Callable[["EpiphyteClient"], str]], ...] = (
+    (discord.ActivityType.playing, "growing quietly"),
+    (discord.ActivityType.watching, "the light"),
+    (discord.ActivityType.playing, "photosynthesizing"),
+    (discord.ActivityType.listening, "for the next message"),
+    (discord.ActivityType.watching, lambda client: f"over {len(client.guilds)} channels"),
+)
 
 
 @dataclass
@@ -166,6 +183,9 @@ class EpiphyteClient(discord.Client):
         self._storage: storage.Storage | None = None
         self._states: dict[int, storage.GuildState] = {}
         self._windows: dict[tuple[int, int], WateringWindow] = {}
+        self._message_locks: dict[int, asyncio.Lock] = {}
+        self._db_lock = asyncio.Lock()
+        self._presence_index = 0
         self._scheduler: AsyncIOScheduler | None = None
 
     async def setup_hook(self) -> None:
@@ -200,7 +220,9 @@ class EpiphyteClient(discord.Client):
         _log.info("Metabolic tick scheduled every %s seconds.", TICK_INTERVAL_SECONDS)
 
     async def close(self) -> None:
-        """Shut down cleanly: stop the scheduler and close the database."""
+        """Shut down cleanly: stop the presence loop, the scheduler, and the database."""
+        if self._rotate_presence.is_running():
+            self._rotate_presence.cancel()
         if self._scheduler is not None and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
         if self._storage is not None:
@@ -209,13 +231,34 @@ class EpiphyteClient(discord.Client):
 
     # --- state ---------------------------------------------------------------
 
-    def _store(self, state: storage.GuildState) -> None:
-        """Update the in-memory cache and persist the state immediately."""
+    def _message_lock(self, guild_id: int) -> asyncio.Lock:
+        """Return the guild's living-message lock, creating it on first use.
+
+        Serializes :meth:`refresh_channel_message` and :meth:`reanchor_channel_message`
+        per guild, so a slash command and the metabolic tick can never both find no
+        tracked message at once and each post their own.
+        """
+        lock = self._message_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._message_locks[guild_id] = lock
+        return lock
+
+    async def _store(self, state: storage.GuildState) -> None:
+        """Update the in-memory cache and persist the state immediately.
+
+        The in-memory cache is updated synchronously, before any ``await``, so
+        every reader of :attr:`_states` sees it immediately; only the disk write
+        (matching the Pillow render's off-loop pattern) trails behind, serialized
+        through :attr:`_db_lock` since the shared connection may only be touched
+        by one thread at a time.
+        """
         self._states[state.guild_id] = state
         if self._storage is not None:
-            self._storage.save(state)
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.save, state)
 
-    def _store_watering(self, state: storage.GuildState) -> None:
+    async def _store_watering(self, state: storage.GuildState) -> None:
         """Persist a watering, which moves the moisture but never the body.
 
         Kept apart from :meth:`_store` because this runs on every message, while an
@@ -224,13 +267,14 @@ class EpiphyteClient(discord.Client):
         """
         self._states[state.guild_id] = state
         if self._storage is not None:
-            self._storage.save_moisture(state)
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.save_moisture, state)
 
     def state(self, guild_id: int) -> storage.GuildState | None:
         """Return a guild's plant state, or ``None`` if it has no plant yet."""
         return self._states.get(guild_id)
 
-    def set_channel(self, guild_id: int, channel_id: int, now: float) -> None:
+    async def set_channel(self, guild_id: int, channel_id: int, now: float) -> None:
         """Bind the guild's plant to a channel.
 
         On a guild's first contact this germinates a fresh plant from a new random
@@ -241,7 +285,7 @@ class EpiphyteClient(discord.Client):
         state = self._states.get(guild_id)
         if state is None:
             seed = random.getrandbits(63)
-            self._store(
+            await self._store(
                 storage.GuildState(
                     guild_id=guild_id,
                     structure=structure.germinate(seed),
@@ -253,9 +297,9 @@ class EpiphyteClient(discord.Client):
                 )
             )
         elif state.channel_id != channel_id:
-            self._store(replace(state, channel_id=channel_id, message_id=None))
+            await self._store(replace(state, channel_id=channel_id, message_id=None))
 
-    def water_plant(self, guild_id: int, user_id: int, now: float) -> None:
+    async def water_plant(self, guild_id: int, user_id: int, now: float) -> None:
         """Water a guild's plant with diminishing returns for the author.
 
         The author's repeated waterings within their window add progressively
@@ -274,11 +318,39 @@ class EpiphyteClient(discord.Client):
         self._windows[(guild_id, user_id)] = WateringWindow(new_start, new_count)
 
         current = moisture.decay(state.moisture, now - state.last_update)
-        self._store_watering(
+        await self._store_watering(
             replace(state, moisture=moisture.water(current, amount), last_update=now)
         )
 
-    def advance_life(self, guild_id: int, now: float) -> None:
+    def _prune_watering_windows(self, now: float) -> None:
+        """Drop watering windows whose window has fully elapsed.
+
+        Without this, every (guild, user) pair that has ever watered would stay in
+        memory for the bot's entire uptime — tracking everyone who ever has,
+        instead of just who currently does. Run once per metabolic tick, since it
+        already sweeps on a steady real-time interval.
+        """
+        expired = [
+            key
+            for key, window in self._windows.items()
+            if now - window.window_start >= moisture.WATERING_WINDOW_SECONDS
+        ]
+        for key in expired:
+            del self._windows[key]
+
+    async def _reclaim_after_reseed(self) -> None:
+        """Run VACUUM after a generational reseed, off the event loop.
+
+        A death-to-rebirth reseed is a naturally rare event (unlike per-message or
+        per-tick writes), and exactly when a large gone structure blob's freed
+        pages become worth returning to the OS. Serialized through the same
+        :attr:`_db_lock` as ordinary saves, so it never runs concurrently with one.
+        """
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.vacuum)
+
+    async def advance_life(self, guild_id: int, now: float) -> None:
         """Advance one guild's plant by a single life-step (the tick's core).
 
         Decays moisture to ``now``, then either grows the plant one step (gated by
@@ -294,33 +366,36 @@ class EpiphyteClient(discord.Client):
             dead_ticks = state.dead_ticks + 1
             if dead_ticks >= DEAD_PHASE_TICKS:
                 successor = structure.germinate_successor(state.structure)
-                self._store(
+                await self._store(
                     replace(state, structure=successor, moisture=current,
                             last_update=now, dead_ticks=0)
                 )
+                await self._reclaim_after_reseed()
             else:
-                self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
+                await self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
             return
 
         genome = structure.genome_from_seed(state.structure.seed)
         grown = structure.grow(state.structure, genome, current, 1)
-        self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
+        await self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
 
     async def on_message(self, message: discord.Message) -> None:
-        """Water the plant when a message arrives in the guild's bound channel.
+        """Water the plant when a message arrives anywhere in a guild with a plant.
 
-        Ignores the bot's own messages, direct messages, and messages outside the
-        bound channel. Only the fact that a message arrived matters — never its
-        content.
+        Ignores the bot's own messages, direct messages, and guilds that have not
+        yet germinated a plant (no ``/epiphyte-channel`` call). Once a plant
+        exists, every channel in the guild counts, not just the one the living
+        message is displayed in. Only the fact that a message arrived matters —
+        never its content.
         """
         if message.author == self.user:
             return
         if message.guild is None:
             return
         state = self.state(message.guild.id)
-        if state is None or state.channel_id is None or message.channel.id != state.channel_id:
+        if state is None or state.channel_id is None:
             return
-        self.water_plant(message.guild.id, message.author.id, time.time())
+        await self.water_plant(message.guild.id, message.author.id, time.time())
 
     # --- the metabolic tick --------------------------------------------------
 
@@ -333,14 +408,38 @@ class EpiphyteClient(discord.Client):
         whole life cycle without any command.
         """
         now = time.time()
+        self._prune_watering_windows(now)
         for guild_id, state in list(self._states.items()):
             if state.channel_id is None:
                 continue
             try:
-                self.advance_life(guild_id, now)
+                await self.advance_life(guild_id, now)
                 await self.refresh_channel_message(guild_id)
             except Exception:  # noqa: BLE001 — one guild must not break the rest
                 _log.exception("Metabolic tick failed for guild %s.", guild_id)
+
+    # --- the rotating presence -------------------------------------------------
+
+    @tasks.loop(minutes=PRESENCE_ROTATE_MINUTES)
+    async def _rotate_presence(self) -> None:
+        """Advance to the next in-fiction status line and apply it.
+
+        Purely cosmetic flavour text — never a stand-in for the plant's real
+        state, which only ever shows in the living message and embeds.
+        """
+        activity_type, text = PRESENCE_ACTIVITIES[self._presence_index % len(PRESENCE_ACTIVITIES)]
+        self._presence_index += 1
+        name = text(self) if callable(text) else text
+        await self.change_presence(activity=discord.Activity(type=activity_type, name=name))
+
+    async def on_ready(self) -> None:
+        """Start the presence rotation once connected.
+
+        ``on_ready`` can fire again on every reconnect, unlike ``setup_hook``, so
+        the loop is only started if it is not already running.
+        """
+        if not self._rotate_presence.is_running():
+            self._rotate_presence.start()
 
     # --- the living channel message (I/O) ------------------------------------
 
@@ -374,51 +473,68 @@ class EpiphyteClient(discord.Client):
         Renders the guild's current structure and edits the tracked message; if
         that message was deleted (or none has been posted yet) a fresh one is
         posted and its id stored. Called by the tick and after a channel is bound.
+        Holds the guild's :meth:`_message_lock` for its whole body, so it can
+        never race a concurrent :meth:`reanchor_channel_message` into posting twice.
         """
-        state = self._states.get(guild_id)
-        if state is None or state.channel_id is None:
-            return
-        channel = await self._text_channel(state.channel_id)
-        if channel is None:
-            return  # channel unreachable right now; the next tick will retry
-        png = await self._render_bytes(state.structure, state.moisture)
-        embed = self._embed_for(state)
-
-        if state.message_id is not None:
-            try:
-                await channel.get_partial_message(state.message_id).edit(
-                    embed=embed,
-                    attachments=[discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME)],
-                )
+        async with self._message_lock(guild_id):
+            state = self._states.get(guild_id)
+            if state is None or state.channel_id is None:
                 return
-            except discord.NotFound:
-                pass  # the message is gone — fall through and post a fresh one
+            channel = await self._text_channel(state.channel_id)
+            if channel is None:
+                return  # channel unreachable right now; the next tick will retry
+            png = await self._render_bytes(state.structure, state.moisture)
+            embed = self._embed_for(state)
 
-        message = await channel.send(
-            embed=embed, file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME)
-        )
-        self._store(replace(self._states[guild_id], message_id=message.id))
+            if state.message_id is not None:
+                try:
+                    await channel.get_partial_message(state.message_id).edit(
+                        embed=embed,
+                        attachments=[discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME)],
+                    )
+                    return
+                except discord.NotFound:
+                    pass  # the message is gone — fall through and post a fresh one
+                except (discord.Forbidden, discord.HTTPException):
+                    _log.exception("Failed to edit the living message for guild %s.", guild_id)
+                    return
+
+            try:
+                message = await channel.send(
+                    embed=embed, file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME)
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                _log.exception("Failed to post the living message for guild %s.", guild_id)
+                return
+            await self._store(replace(self._states[guild_id], message_id=message.id))
 
     async def reanchor_channel_message(self, guild_id: int) -> None:
         """Move the living message back to the bottom of the channel.
 
         Best-effort deletes the current living message and posts a fresh one, so a
         plant that has scrolled out of view returns to where people are talking.
+        Shares :meth:`refresh_channel_message`'s per-guild lock, so the two can
+        never both find no tracked message and each post their own.
         """
-        state = self._states.get(guild_id)
-        if state is None or state.channel_id is None:
-            return
-        channel = await self._text_channel(state.channel_id)
-        if channel is None:
-            return
-        if state.message_id is not None:
-            await self._delete_message(channel, state.message_id)
-        png = await self._render_bytes(state.structure, state.moisture)
-        message = await channel.send(
-            embed=self._embed_for(state),
-            file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME),
-        )
-        self._store(replace(self._states[guild_id], message_id=message.id))
+        async with self._message_lock(guild_id):
+            state = self._states.get(guild_id)
+            if state is None or state.channel_id is None:
+                return
+            channel = await self._text_channel(state.channel_id)
+            if channel is None:
+                return
+            if state.message_id is not None:
+                await self._delete_message(channel, state.message_id)
+            png = await self._render_bytes(state.structure, state.moisture)
+            try:
+                message = await channel.send(
+                    embed=self._embed_for(state),
+                    file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                _log.exception("Failed to re-anchor the living message for guild %s.", guild_id)
+                return
+            await self._store(replace(self._states[guild_id], message_id=message.id))
 
     def living_message_needs_reanchor(self, state: storage.GuildState) -> bool:
         """True if the living message is missing or has newer messages below it."""
@@ -479,11 +595,15 @@ async def plant(interaction: discord.Interaction) -> None:
     genome = structure.genome_from_seed(state.structure.seed)
     buffer = await asyncio.to_thread(render.render, state.structure, display_moisture, genome)
     embed = build_plant_embed(display_moisture, state.structure)
-    await interaction.response.send_message(
-        embed=embed,
-        file=discord.File(buffer, filename=PLANT_IMAGE_FILENAME),
-        ephemeral=True,
-    )
+    try:
+        await interaction.response.send_message(
+            embed=embed,
+            file=discord.File(buffer, filename=PLANT_IMAGE_FILENAME),
+            ephemeral=True,
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        _log.exception("Failed to send the /plant snapshot for guild %s.", interaction.guild_id)
+        return
 
     if client.living_message_needs_reanchor(state):
         await client.reanchor_channel_message(interaction.guild_id)
@@ -491,13 +611,13 @@ async def plant(interaction: discord.Interaction) -> None:
 
 @client.tree.command(
     name="epiphyte-channel",
-    description="Choose the channel the plant lives in and is watered by.",
+    description="Choose the channel the plant is displayed in.",
 )
-@app_commands.describe(channel="The text channel the plant lives in; messages there water it.")
+@app_commands.describe(channel="The text channel the plant's living message is posted in.")
 async def epiphyte_channel(
     interaction: discord.Interaction, channel: discord.TextChannel
 ) -> None:
-    """Bind the plant to a channel and post its living message there."""
+    """Bind the plant's display channel and post its living message there."""
     if interaction.guild_id is None:
         await interaction.response.send_message(
             "Epiphyte only grows on servers, not in direct messages.",
@@ -506,12 +626,15 @@ async def epiphyte_channel(
         return
 
     previous = client.state(interaction.guild_id)
-    client.set_channel(interaction.guild_id, channel.id, time.time())
-    await interaction.response.send_message(
-        f"🌱 The plant now lives in {channel.mention}. Every message there waters it, "
-        "and it will grow there on its own over time.",
-        ephemeral=True,
-    )
+    await client.set_channel(interaction.guild_id, channel.id, time.time())
+    try:
+        await interaction.response.send_message(
+            f"🌱 The plant now lives in {channel.mention}. Activity anywhere in this "
+            "server waters it, and it will grow there on its own over time.",
+            ephemeral=True,
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        _log.exception("Failed to confirm channel binding for guild %s.", interaction.guild_id)
 
     # If the plant moved channels, remove the stale living message it left behind.
     if (

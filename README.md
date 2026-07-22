@@ -1,10 +1,10 @@
 # Epiphyte 🌱
 
-**A Discord bot that grows a single living plant from your channel's activity.**
+**A Discord bot that grows a single living plant from your server's activity.**
 
-Every message waters the plant; silence lets it wither over days. Epiphyte is
-not a utility bot — it is a small art project with an honest side effect: the
-plant shows, unvarnished, how alive a channel really is.
+Every message anywhere in the server waters the plant; silence lets it wither
+over days. Epiphyte is not a utility bot — it is a small art project with an
+honest side effect: the plant shows, unvarnished, how alive a server really is.
 
 <p align="center">
   <img src="assets/growth.gif" alt="A plant accumulating from a sprout into a branching tree" width="320">
@@ -12,25 +12,26 @@ plant shows, unvarnished, how alive a channel really is.
 
 ## What it is, and why
 
-Give Epiphyte one channel and it renders **one plant** for that server. People
-talking keeps it lush; a quiet channel lets it dry out and wither. Nothing to
-click, nothing to maintain — the plant simply mirrors the room.
+Epiphyte renders **one plant** for the whole server, displayed in whichever
+channel you choose. People talking anywhere in the server keeps it lush; a
+quiet server lets it dry out and wither. Nothing to click, nothing to
+maintain — the plant simply mirrors the room.
 
 The catch that makes it honest: you cannot fake a thriving plant. A single
-person spamming the channel hits **diminishing returns** and cannot keep it
-alive on their own — only genuine activity from several people can. The plant is
-a mirror, not a scoreboard.
+person spamming hits **diminishing returns** and cannot keep it alive on their
+own — only genuine activity from several people can. The plant is a mirror,
+not a scoreboard.
 
 Every server gets its own isolated plant — there is no shared, cross-server
 world. And no two are alike: each plant grows from its own seed into a body that
 accumulates over its whole life, so the same moisture never means the same
-shape. A plant *is* its history — and a channel that stays alive for months will
+shape. A plant *is* its history — and a server that stays alive for months will
 see things a busy weekend can never buy: a bloom, a seed, eventually an epiphyte
 of its own.
 
 ## How it works
 
-- **Watering** — each message in the chosen channel adds a little moisture.
+- **Watering** — each message anywhere in the server adds a little moisture.
 - **Withering** — moisture decays exponentially; left in silence, the plant
   falls from thriving to withered over roughly three days. A *prolonged* drought
   goes further: the outermost branches die back for good, from the tips inward.
@@ -58,7 +59,7 @@ of its own.
   flowered several times over can take on the thing this project is named after: a
   second, far smaller plant that settles on one of its old limbs and grows there,
   with a seed and a dwarfed genome of its own. It cannot be hurried.
-- **Death and lineage** — abandon a channel for long enough and even the inner
+- **Death and lineage** — abandon a server for long enough and even the inner
   wood dies: the plant dies, lingers a while as a bare grey skeleton, then a new
   seed sprouts in its place. That seed is a mutation of the one before, so each
   generation resembles its parent yet is its own individual, and a plant that
@@ -149,11 +150,11 @@ directory to remember each server's plant across restarts.
 
 ### 4. Use it in Discord
 
-1. **`/epiphyte-channel #channel`** — choose the channel the plant lives in. The
-   bot posts the living plant message there straight away; until this is set,
-   messages are ignored.
-2. Chat in that channel — every message quietly waters the plant, and it grows
-   and withers in the living message on its own over time.
+1. **`/epiphyte-channel #channel`** — choose the channel the plant is displayed
+   in. The bot posts the living plant message there straight away; until this is
+   set, messages are ignored.
+2. Chat anywhere in the server — every message quietly waters the plant, and it
+   grows and withers in the living message on its own over time.
 3. **`/plant`** *(optional)* — get a private snapshot of the plant right now, and
    bring the living message back down if it has scrolled out of view.
 
@@ -171,7 +172,7 @@ lives in the code or repository.
 
 | Command | What it does |
 |---|---|
-| `/epiphyte-channel #channel` | Choose the channel the plant lives in, and post its living message there. |
+| `/epiphyte-channel #channel` | Choose the channel the plant is displayed in, and post its living message there. |
 | `/plant` | Show a private snapshot now, and re-anchor the living message if it has scrolled away. Never grows the plant — the heartbeat does that. |
 
 ## Development
@@ -189,6 +190,11 @@ python -c "import bot"   # token-free smoke test: the module imports cleanly
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the project structure, conventions and
 design guidelines.
+
+## Deployment
+
+A `Dockerfile` and `docker-compose.yml` are included for running Epiphyte as a
+container. See [DEPLOY.md](DEPLOY.md) for the exact steps.
 
 ## Built with
 
