@@ -17,6 +17,7 @@ import io
 from unittest.mock import AsyncMock, MagicMock
 
 import bot
+import discord
 import moisture
 import render
 import storage
@@ -49,18 +50,39 @@ def _make_channel(channel_id: int = 100) -> MagicMock:
     return channel
 
 
-def _make_interaction(guild_id: int | None = 1, user_id: int = 42) -> MagicMock:
+def _make_interaction(
+    guild_id: int | None = 1,
+    user_id: int = 42,
+    permissions: discord.Permissions | None = None,
+) -> MagicMock:
     """A fake interaction with awaitable response methods, matching what
-    ``require_guild``, the commands and the views under test actually call."""
+    ``require_guild``, the commands and the views under test actually call.
+
+    Defaults ``permissions`` to full permissions, so tests that predate the
+    Manage Channels gate on ``/epiphyte-channel`` (see
+    ``require_manage_channels``) and aren't about permissions at all don't
+    need to think about it; tests of that gate pass their own.
+    """
     interaction = MagicMock()
     interaction.guild_id = guild_id
     interaction.user = MagicMock()
     interaction.user.id = user_id
+    interaction.permissions = permissions if permissions is not None else discord.Permissions.all()
     interaction.response = MagicMock()
     interaction.response.send_message = AsyncMock()
     interaction.response.edit_message = AsyncMock()
     interaction.original_response = AsyncMock(return_value=MagicMock())
     return interaction
+
+
+def _forbidden() -> discord.Forbidden:
+    """A discord.Forbidden as raised when the bot can see a channel but can't post in it."""
+    return discord.Forbidden(MagicMock(status=403, reason="Forbidden"), "Missing Access")
+
+
+def _http_exception() -> discord.HTTPException:
+    """A generic, non-Forbidden HTTPException (e.g. a transient server error)."""
+    return discord.HTTPException(MagicMock(status=500, reason="Internal Server Error"), "boom")
 
 
 # --- 2a: channel-unreachable state -----------------------------------------
@@ -116,13 +138,106 @@ def test_refresh_clears_unreachable_timestamp_once_channel_resolves() -> None:
     assert client._states[guild_id].message_id == 999
 
 
-def test_plant_command_shows_unreachable_note_when_set(monkeypatch) -> None:
-    """/plant prepends the unreachable-channel note when the field is set."""
+def test_refresh_marks_unreachable_on_forbidden_send() -> None:
+    """A discord.Forbidden while posting a fresh message marks it unreachable too.
+
+    The channel resolves fine (unlike the "channel is gone" tests above) — it's
+    the send itself that the bot isn't allowed to do.
+    """
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = _make_state(guild_id=guild_id, message_id=None)
+    fake_channel = _make_channel(channel_id=100)
+    fake_channel.send = AsyncMock(side_effect=_forbidden())
+    client._text_channel = AsyncMock(return_value=fake_channel)
+    client._render_bytes = AsyncMock(return_value=b"fake-png")
+
+    asyncio.run(client.refresh_channel_message(guild_id))
+
+    assert client._states[guild_id].channel_unreachable_since is not None
+
+
+def test_refresh_marks_unreachable_on_forbidden_edit() -> None:
+    """A discord.Forbidden while editing the existing message marks it unreachable too."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = _make_state(guild_id=guild_id, message_id=500)
+    fake_partial = MagicMock()
+    fake_partial.edit = AsyncMock(side_effect=_forbidden())
+    fake_channel = _make_channel(channel_id=100)
+    fake_channel.get_partial_message = MagicMock(return_value=fake_partial)
+    client._text_channel = AsyncMock(return_value=fake_channel)
+    client._render_bytes = AsyncMock(return_value=b"fake-png")
+
+    asyncio.run(client.refresh_channel_message(guild_id))
+
+    assert client._states[guild_id].channel_unreachable_since is not None
+
+
+def test_refresh_does_not_mark_unreachable_on_generic_http_exception() -> None:
+    """A non-Forbidden HTTPException (e.g. a transient server error) is only logged.
+
+    Only the specific Forbidden case is a standing "can't post here" condition;
+    other HTTP failures stay exactly as before this change — logged, not surfaced.
+    """
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = _make_state(guild_id=guild_id, message_id=None)
+    fake_channel = _make_channel(channel_id=100)
+    fake_channel.send = AsyncMock(side_effect=_http_exception())
+    client._text_channel = AsyncMock(return_value=fake_channel)
+    client._render_bytes = AsyncMock(return_value=b"fake-png")
+
+    asyncio.run(client.refresh_channel_message(guild_id))
+
+    assert client._states[guild_id].channel_unreachable_since is None
+
+
+def test_reanchor_marks_unreachable_on_forbidden_send() -> None:
+    """reanchor_channel_message surfaces a Forbidden send the same way refresh does."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = _make_state(guild_id=guild_id, message_id=None)
+    fake_channel = _make_channel(channel_id=100)
+    fake_channel.send = AsyncMock(side_effect=_forbidden())
+    client._text_channel = AsyncMock(return_value=fake_channel)
+    client._render_bytes = AsyncMock(return_value=b"fake-png")
+
+    asyncio.run(client.reanchor_channel_message(guild_id))
+
+    assert client._states[guild_id].channel_unreachable_since is not None
+
+
+def test_channel_trouble_message_reports_missing_channel_when_unresolvable() -> None:
+    """If the channel no longer resolves at all, /plant is told it's gone."""
+    client = bot.EpiphyteClient()
+    client._text_channel = AsyncMock(return_value=None)
+
+    message = asyncio.run(client._channel_trouble_message(channel_id=100))
+
+    assert "isn't there anymore" in message
+    assert "epiphyte-channel" in message
+
+
+def test_channel_trouble_message_reports_permission_when_channel_resolves() -> None:
+    """If the channel still resolves, /plant points at a permission problem instead."""
+    client = bot.EpiphyteClient()
+    client._text_channel = AsyncMock(return_value=_make_channel(channel_id=100))
+
+    message = asyncio.run(client._channel_trouble_message(channel_id=100))
+
+    assert "Send Messages" in message
+    assert "isn't there anymore" not in message
+
+
+def test_plant_command_shows_unreachable_note_when_channel_is_gone(monkeypatch) -> None:
+    """/plant shows the "channel is gone" wording when it no longer resolves at all."""
     client = bot.EpiphyteClient()
     guild_id = 1
     client._states[guild_id] = _make_state(
         guild_id=guild_id, message_id=500, channel_unreachable_since=999.0
     )
+    client._text_channel = AsyncMock(return_value=None)
     monkeypatch.setattr(bot, "client", client)
     monkeypatch.setattr(render, "render", lambda *args, **kwargs: io.BytesIO(b"fake-png"))
 
@@ -131,7 +246,28 @@ def test_plant_command_shows_unreachable_note_when_set(monkeypatch) -> None:
 
     kwargs = interaction.response.send_message.call_args.kwargs
     assert kwargs["content"] is not None
+    assert "isn't there anymore" in kwargs["content"]
     assert "epiphyte-channel" in kwargs["content"]
+
+
+def test_plant_command_shows_permission_note_when_channel_resolves(monkeypatch) -> None:
+    """/plant shows the permission wording when the channel resolves but can't be posted to."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = _make_state(
+        guild_id=guild_id, message_id=500, channel_unreachable_since=999.0
+    )
+    client._text_channel = AsyncMock(return_value=_make_channel(channel_id=100))
+    monkeypatch.setattr(bot, "client", client)
+    monkeypatch.setattr(render, "render", lambda *args, **kwargs: io.BytesIO(b"fake-png"))
+
+    interaction = _make_interaction(guild_id=guild_id)
+    asyncio.run(bot.plant.callback(interaction))  # pyright: ignore[reportCallIssue]
+
+    kwargs = interaction.response.send_message.call_args.kwargs
+    assert kwargs["content"] is not None
+    assert "Send Messages" in kwargs["content"]
+    assert "isn't there anymore" not in kwargs["content"]
 
 
 def test_plant_command_omits_note_when_channel_reachable(monkeypatch) -> None:
@@ -216,6 +352,88 @@ def test_epiphyte_channel_rebind_skips_confirmation(monkeypatch) -> None:
     assert client._states[guild_id].channel_id == 20
 
 
+def test_germinate_plant_ignores_second_call_for_already_seeded_guild() -> None:
+    """A second germinate_plant call for a guild that already has a plant is a no-op.
+
+    Mirrors two ConfirmGerminationView confirmations racing for the same guild:
+    the first call creates the plant, and a second one — however it is
+    triggered — must not reset it back to a fresh seed and generation 1.
+    """
+    client = bot.EpiphyteClient()
+    guild_id = 42
+
+    first = asyncio.run(client.germinate_plant(guild_id, channel_id=100, now=1000.0))
+    state_after_first = client._states[guild_id]
+
+    second = asyncio.run(client.germinate_plant(guild_id, channel_id=200, now=2000.0))
+    state_after_second = client._states[guild_id]
+
+    assert first is True
+    assert second is False
+    assert state_after_second.structure.seed == state_after_first.structure.seed
+    assert state_after_second.structure.generation == state_after_first.structure.generation == 1
+    assert state_after_second.channel_id == state_after_first.channel_id == 100
+    assert state_after_second.last_update == state_after_first.last_update == 1000.0
+
+
+def test_germinate_plant_succeeds_normally_when_no_plant_exists() -> None:
+    """The regular, single-confirmation case is unchanged: it still germinates."""
+    client = bot.EpiphyteClient()
+    guild_id = 9
+
+    planted = asyncio.run(client.germinate_plant(guild_id, channel_id=100, now=1000.0))
+
+    assert planted is True
+    assert guild_id in client._states
+    assert client._states[guild_id].channel_id == 100
+    assert client._states[guild_id].structure.generation == 1
+
+
+def test_second_confirmation_dialog_does_not_reset_the_plant(monkeypatch) -> None:
+    """Two confirmation dialogs racing for the same guild: the second is a no-op.
+
+    Simulates two people running ``/epiphyte-channel`` moments apart, both
+    before either has confirmed — each gets their own view. The first
+    confirmation germinates the plant; the second, confirmed afterwards, must
+    see the plant already there and leave it untouched instead of silently
+    reseeding it with a new seed and generation 1.
+    """
+    client = bot.EpiphyteClient()
+    client.refresh_channel_message = AsyncMock()
+    monkeypatch.setattr(bot, "client", client)
+
+    guild_id = 77
+    channel_a = _make_channel(channel_id=10)
+    channel_b = _make_channel(channel_id=20)
+    view_a = bot.ConfirmGerminationView(guild_id, channel_a, author_id=1)
+    view_b = bot.ConfirmGerminationView(guild_id, channel_b, author_id=2)
+    interaction_a = _make_interaction(guild_id=guild_id, user_id=1)
+    interaction_b = _make_interaction(guild_id=guild_id, user_id=2)
+
+    asyncio.run(view_a.confirm.callback(interaction_a))
+    state_after_first = client._states[guild_id]
+
+    asyncio.run(view_b.confirm.callback(interaction_b))
+    state_after_second = client._states[guild_id]
+
+    # The plant the first confirmation created survives untouched.
+    assert state_after_second.structure.seed == state_after_first.structure.seed
+    assert state_after_second.structure.generation == 1
+    assert state_after_second.channel_id == channel_a.id
+
+    # The first dialog reports the normal success message.
+    first_kwargs = interaction_a.response.edit_message.await_args.kwargs
+    assert channel_a.mention in first_kwargs["content"]
+
+    # The second dialog is told plainly that it no longer applies.
+    second_kwargs = interaction_b.response.edit_message.await_args.kwargs
+    assert "already has a plant" in second_kwargs["content"]
+    assert second_kwargs["view"] is None
+
+    # Only the successful confirmation re-anchors the living message.
+    client.refresh_channel_message.assert_awaited_once_with(guild_id)
+
+
 def test_confirmation_timeout_creates_no_state() -> None:
     """A view that times out without a press leaves no state row behind."""
     fake_client = MagicMock()
@@ -252,6 +470,120 @@ def test_confirmation_timeout_disables_button_and_edits_message() -> None:
     edit_kwargs = fake_message.edit.await_args.kwargs
     assert "expired" in edit_kwargs["content"]
     assert edit_kwargs["content"] != original_content
+
+
+# --- 2d: Manage Channels gating on /epiphyte-channel -------------------------
+
+
+def test_require_manage_channels_allows_manage_channels_permission() -> None:
+    """A member with Manage Channels passes, and nothing is sent."""
+    interaction = _make_interaction(permissions=discord.Permissions(manage_channels=True))
+
+    allowed = asyncio.run(bot.require_manage_channels(interaction))
+
+    assert allowed is True
+    interaction.response.send_message.assert_not_awaited()
+
+
+def test_require_manage_channels_allows_administrator_permission() -> None:
+    """A member with Administrator (but not Manage Channels itself) also passes."""
+    interaction = _make_interaction(permissions=discord.Permissions(administrator=True))
+
+    allowed = asyncio.run(bot.require_manage_channels(interaction))
+
+    assert allowed is True
+    interaction.response.send_message.assert_not_awaited()
+
+
+def test_require_manage_channels_rejects_ordinary_member() -> None:
+    """A member with neither permission is refused with a clear, ephemeral reason."""
+    interaction = _make_interaction(permissions=discord.Permissions.none())
+
+    allowed = asyncio.run(bot.require_manage_channels(interaction))
+
+    assert allowed is False
+    call = interaction.response.send_message.call_args
+    assert call.kwargs["ephemeral"] is True
+    assert "Manage Channels" in call.args[0]
+
+
+def test_epiphyte_channel_rejects_rebind_without_manage_channels(monkeypatch) -> None:
+    """Without the permission, rebinding an existing plant is refused and changes nothing."""
+    client = bot.EpiphyteClient()
+    guild_id = 5
+    client._states[guild_id] = _make_state(guild_id=guild_id, channel_id=10, message_id=None)
+    monkeypatch.setattr(bot, "client", client)
+
+    interaction = _make_interaction(
+        guild_id=guild_id, user_id=1, permissions=discord.Permissions.none()
+    )
+    channel = _make_channel(channel_id=20)
+
+    asyncio.run(bot.epiphyte_channel.callback(interaction, channel))  # pyright: ignore[reportCallIssue]
+
+    call = interaction.response.send_message.call_args
+    assert call.kwargs["ephemeral"] is True
+    assert "Manage Channels" in call.args[0]
+    assert "view" not in call.kwargs
+    # The existing binding is untouched.
+    assert client._states[guild_id].channel_id == 10
+
+
+def test_epiphyte_channel_rejects_first_binding_without_manage_channels(monkeypatch) -> None:
+    """The same refusal applies to a guild's very first binding, not just a rebind."""
+    client = bot.EpiphyteClient()
+    client.germinate_plant = AsyncMock()
+    monkeypatch.setattr(bot, "client", client)
+
+    guild_id = 8
+    interaction = _make_interaction(
+        guild_id=guild_id, user_id=1, permissions=discord.Permissions.none()
+    )
+    channel = _make_channel(channel_id=30)
+
+    asyncio.run(bot.epiphyte_channel.callback(interaction, channel))  # pyright: ignore[reportCallIssue]
+
+    client.germinate_plant.assert_not_awaited()
+    assert guild_id not in client._states
+    call = interaction.response.send_message.call_args
+    assert call.kwargs["ephemeral"] is True
+    assert "view" not in call.kwargs
+
+
+def test_epiphyte_channel_allows_rebind_with_manage_channels(monkeypatch) -> None:
+    """With Manage Channels, rebinding an existing plant proceeds exactly as before."""
+    client = bot.EpiphyteClient()
+    guild_id = 6
+    client._states[guild_id] = _make_state(guild_id=guild_id, channel_id=10, message_id=None)
+    client.refresh_channel_message = AsyncMock()
+    monkeypatch.setattr(bot, "client", client)
+
+    interaction = _make_interaction(
+        guild_id=guild_id, user_id=1, permissions=discord.Permissions(manage_channels=True)
+    )
+    channel = _make_channel(channel_id=20)
+
+    asyncio.run(bot.epiphyte_channel.callback(interaction, channel))  # pyright: ignore[reportCallIssue]
+
+    assert client._states[guild_id].channel_id == 20
+    assert "view" not in interaction.response.send_message.call_args.kwargs
+
+
+def test_epiphyte_channel_allows_first_binding_with_administrator(monkeypatch) -> None:
+    """Administrator alone (no explicit Manage Channels bit) also allows first binding."""
+    client = bot.EpiphyteClient()
+    monkeypatch.setattr(bot, "client", client)
+
+    guild_id = 11
+    interaction = _make_interaction(
+        guild_id=guild_id, user_id=1, permissions=discord.Permissions(administrator=True)
+    )
+    channel = _make_channel(channel_id=40)
+
+    asyncio.run(bot.epiphyte_channel.callback(interaction, channel))  # pyright: ignore[reportCallIssue]
+
+    kwargs = interaction.response.send_message.call_args.kwargs
+    assert isinstance(kwargs["view"], bot.ConfirmGerminationView)
 
 
 # --- 2c: help pagination -----------------------------------------------------

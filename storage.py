@@ -36,10 +36,14 @@ class GuildState:
     a successor germinates. ``channel_id`` is the display channel, or ``None``
     until one is chosen; ``message_id`` is the living plant message the bot edits
     in place each tick, or ``None`` until it has been posted.
-    ``channel_unreachable_since`` is the Unix time the bound channel first became
-    unresolvable (deleted, or the bot lost access), or ``None`` while it is
-    reachable — set and cleared by the living-message I/O in ``bot.py``, never by
-    the pure logic.
+    ``channel_unreachable_since`` is the Unix time the living message first
+    became undeliverable, or ``None`` while delivery is working. It covers two
+    distinct causes as one shared signal: the bound channel no longer resolves
+    at all (deleted, or the bot lost access to it), and the channel resolves
+    fine but the bot lacks permission to post there. Set and cleared by the
+    living-message I/O in ``bot.py``, never by the pure logic; which of the two
+    causes currently applies is not stored here but re-derived live for
+    ``/plant``'s wording (see ``EpiphyteClient._channel_trouble_message``).
     """
 
     guild_id: int

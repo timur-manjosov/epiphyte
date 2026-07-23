@@ -401,14 +401,28 @@ class EpiphyteClient(discord.Client):
         """Return a guild's plant state, or ``None`` if it has no plant yet."""
         return self._states.get(guild_id)
 
-    async def germinate_plant(self, guild_id: int, channel_id: int, now: float) -> None:
+    async def germinate_plant(self, guild_id: int, channel_id: int, now: float) -> bool:
         """Germinate a guild's very first plant, bound to the given channel.
 
         A fresh random seed makes this server's plant an individual. Only ever
         called after the user has confirmed the persistence notice shown by
         ``/epiphyte-channel`` on a guild's first use — the rebind case in
         :meth:`set_channel` never reaches here.
+
+        Guards against two confirmations racing for the same guild: if two
+        people each open ``/epiphyte-channel`` before either confirms, both get
+        their own view, and both may later be confirmed. The existence check
+        below and the cache write inside :meth:`_store` have no ``await``
+        between them, so no other task can run in between — asyncio only
+        switches tasks at an ``await`` point, and there isn't one here. The
+        first confirmation to actually execute this method therefore always
+        makes the guild non-``None`` before a second one can check, so the
+        loser sees the plant already there and returns ``False`` instead of
+        overwriting it with a fresh seed and generation 1. Returns ``True`` if
+        this call germinated the plant, ``False`` if the guild already had one.
         """
+        if self._states.get(guild_id) is not None:
+            return False
         seed = random.getrandbits(63)
         await self._store(
             storage.GuildState(
@@ -421,6 +435,7 @@ class EpiphyteClient(discord.Client):
                 dead_ticks=0,
             )
         )
+        return True
 
     async def set_channel(self, guild_id: int, channel_id: int) -> None:
         """Rebind an already-germinated guild's plant to a (possibly new) channel.
@@ -602,6 +617,59 @@ class EpiphyteClient(discord.Client):
         """Build the living message's embed from a guild's current stored state."""
         return build_plant_embed(state.moisture, state.structure)
 
+    async def _mark_channel_unreachable(self, state: storage.GuildState) -> None:
+        """Record that the living message currently cannot be delivered, if not already.
+
+        Shared by both causes the living-message I/O can hit: the bound channel
+        no longer resolves at all (deleted, or the bot lost access to it), and
+        the channel resolves fine but the bot lacks permission to post there
+        (``discord.Forbidden`` on the send/edit itself). Both are surfaced through
+        this one timestamp; :meth:`_channel_trouble_message` re-derives which of
+        the two currently applies for /plant's wording rather than this storing
+        that distinction, so no schema change is needed for it. Re-reads the
+        guild's current cached state by id rather than trusting the caller's own
+        copy, since a concurrent watering may have updated it in the meantime
+        (network I/O and rendering both happen before this is called).
+        """
+        current = self._states.get(state.guild_id)
+        if current is not None and current.channel_unreachable_since is None:
+            await self._store(replace(current, channel_unreachable_since=time.time()))
+
+    async def _mark_channel_reachable(self, state: storage.GuildState) -> None:
+        """Clear the unreachable timestamp once delivery is confirmed working again.
+
+        Only writes if it was actually set, so a healthy channel costs no extra
+        write on every tick. See :meth:`_mark_channel_unreachable` for why this
+        re-reads the current cached state rather than trusting ``state`` as passed.
+        """
+        current = self._states.get(state.guild_id)
+        if current is not None and current.channel_unreachable_since is not None:
+            await self._store(replace(current, channel_unreachable_since=None))
+
+    async def _channel_trouble_message(self, channel_id: int) -> str:
+        """Explain, for /plant, why the living message currently isn't showing.
+
+        Only meaningful once :attr:`storage.GuildState.channel_unreachable_since`
+        is set. Re-checks live whether the bound channel still resolves at all:
+        that one cheap lookup is enough to tell the two causes apart without
+        persisting which one applies — if it resolves, the most likely explanation
+        is a missing Send Messages permission there; if it does not, the channel
+        itself is gone or the bot has lost access to it entirely.
+        """
+        channel = await self._text_channel(channel_id)
+        if channel is None:
+            return (
+                "The plant itself is fine and still growing — it just looks like its "
+                "bound channel isn't there anymore. Run `/epiphyte-channel` again to "
+                "give it a new home."
+            )
+        return (
+            "The plant itself is fine and still growing — it just can't post in its "
+            "bound channel right now, most likely a missing **Send Messages** "
+            "permission there. Fix that permission, or run `/epiphyte-channel` again "
+            "to move it somewhere it can post."
+        )
+
     async def refresh_channel_message(self, guild_id: int) -> None:
         """Edit the living plant message in place, posting it if it is missing.
 
@@ -610,8 +678,10 @@ class EpiphyteClient(discord.Client):
         posted and its id stored. Called by the tick and after a channel is bound.
         Holds the guild's :meth:`_message_lock` for its whole body, so it can
         never race a concurrent :meth:`reanchor_channel_message` into posting twice.
-        Records when the bound channel first becomes unreachable, and clears that
-        record once it resolves again — growth itself is unaffected either way.
+        Records when the living message first becomes undeliverable — the bound
+        channel no longer resolves, or it resolves but posting there is
+        ``discord.Forbidden`` — and clears that record once delivery succeeds
+        again; growth itself is unaffected either way.
         """
         async with self._message_lock(guild_id):
             state = self._states.get(guild_id)
@@ -619,12 +689,8 @@ class EpiphyteClient(discord.Client):
                 return
             channel = await self._text_channel(state.channel_id)
             if channel is None:
-                if state.channel_unreachable_since is None:
-                    await self._store(replace(state, channel_unreachable_since=time.time()))
+                await self._mark_channel_unreachable(state)
                 return  # channel unreachable right now; the next tick will retry
-            if state.channel_unreachable_since is not None:
-                state = replace(state, channel_unreachable_since=None)
-                await self._store(state)
             png = await self._render_bytes(state.structure, state.moisture)
             embed = self._embed_for(state)
 
@@ -634,10 +700,14 @@ class EpiphyteClient(discord.Client):
                         embed=embed,
                         attachments=[discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME)],
                     )
+                    await self._mark_channel_reachable(state)
                     return
                 except discord.NotFound:
                     pass  # the message is gone — fall through and post a fresh one
-                except (discord.Forbidden, discord.HTTPException):
+                except discord.Forbidden:
+                    await self._mark_channel_unreachable(state)
+                    return
+                except discord.HTTPException:
                     _log.exception("Failed to edit the living message for guild %s.", guild_id)
                     return
 
@@ -645,9 +715,13 @@ class EpiphyteClient(discord.Client):
                 message = await channel.send(
                     embed=embed, file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME)
                 )
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden:
+                await self._mark_channel_unreachable(state)
+                return
+            except discord.HTTPException:
                 _log.exception("Failed to post the living message for guild %s.", guild_id)
                 return
+            await self._mark_channel_reachable(state)
             await self._store(replace(self._states[guild_id], message_id=message.id))
 
     async def reanchor_channel_message(self, guild_id: int) -> None:
@@ -657,7 +731,8 @@ class EpiphyteClient(discord.Client):
         plant that has scrolled out of view returns to where people are talking.
         Shares :meth:`refresh_channel_message`'s per-guild lock, so the two can
         never both find no tracked message and each post their own. Records or
-        clears the unreachable-channel timestamp exactly as its sibling does.
+        clears the unreachable-channel timestamp for exactly the same two causes
+        as its sibling (see :meth:`_mark_channel_unreachable`).
         """
         async with self._message_lock(guild_id):
             state = self._states.get(guild_id)
@@ -665,12 +740,8 @@ class EpiphyteClient(discord.Client):
                 return
             channel = await self._text_channel(state.channel_id)
             if channel is None:
-                if state.channel_unreachable_since is None:
-                    await self._store(replace(state, channel_unreachable_since=time.time()))
+                await self._mark_channel_unreachable(state)
                 return
-            if state.channel_unreachable_since is not None:
-                state = replace(state, channel_unreachable_since=None)
-                await self._store(state)
             if state.message_id is not None:
                 await self._delete_message(channel, state.message_id)
             png = await self._render_bytes(state.structure, state.moisture)
@@ -679,9 +750,13 @@ class EpiphyteClient(discord.Client):
                     embed=self._embed_for(state),
                     file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME),
                 )
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden:
+                await self._mark_channel_unreachable(state)
+                return
+            except discord.HTTPException:
                 _log.exception("Failed to re-anchor the living message for guild %s.", guild_id)
                 return
+            await self._mark_channel_reachable(state)
             await self._store(replace(self._states[guild_id], message_id=message.id))
 
     def living_message_needs_reanchor(self, state: storage.GuildState) -> bool:
@@ -727,6 +802,30 @@ async def require_guild(interaction: discord.Interaction) -> int | None:
     return None
 
 
+async def require_manage_channels(interaction: discord.Interaction) -> bool:
+    """Return whether the invoker may configure the plant's channel; refuse if not.
+
+    Only Manage Channels (or Administrator, which implies it) may bind or move
+    the plant: unlike every other interaction with Epiphyte, this is a
+    permanent, server-wide fixture rather than an ordinary member-facing
+    action, so it is gated the same way a channel's own settings would be.
+    Checked via :attr:`discord.Interaction.permissions` — the invoker's already
+    -resolved permissions in the channel the command was run from — so this
+    needs no extra API call and reflects the same permissions Discord itself
+    used to decide whether to show the command at all.
+    """
+    permissions = interaction.permissions
+    if permissions.manage_channels or permissions.administrator:
+        return True
+    await interaction.response.send_message(
+        "Setting or moving the plant's channel needs the **Manage Channels** "
+        "permission (or Administrator) — it's a permanent, server-wide fixture, "
+        "not something every member can relocate.",
+        ephemeral=True,
+    )
+    return False
+
+
 @client.tree.command(
     name="plant",
     description="Show the plant right now, and bring it back into view.",
@@ -737,9 +836,12 @@ async def plant(interaction: discord.Interaction) -> None:
     Growth is the metabolic tick's job now, so this never grows the plant. It
     renders the current state (moisture decayed to this moment, for display) as an
     ephemeral snapshot for the caller, and if the living channel message has
-    scrolled out of view it quietly moves it back to the bottom. If the bound
-    channel has gone unreachable, this is also the one place that says so — the
-    living channel message itself can hardly speak up when its channel is gone.
+    scrolled out of view it quietly moves it back to the bottom. If the living
+    message currently cannot be delivered — the bound channel is gone, or it's
+    there but the bot can't post in it — this is also the one place that says
+    so, with a wording matched to whichever of the two it currently is (see
+    :meth:`EpiphyteClient._channel_trouble_message`): the living channel message
+    itself can hardly speak up when it cannot even be posted.
     """
     guild_id = await require_guild(interaction)
     if guild_id is None:
@@ -760,11 +862,7 @@ async def plant(interaction: discord.Interaction) -> None:
     embed = build_plant_embed(display_moisture, state.structure)
     content = None
     if state.channel_unreachable_since is not None:
-        content = (
-            "The plant itself is fine and still growing — it just looks like its "
-            "bound channel isn't there anymore. Run `/epiphyte-channel` again to "
-            "give it a new home."
-        )
+        content = await client._channel_trouble_message(state.channel_id)
     try:
         await interaction.response.send_message(
             content=content,
@@ -822,9 +920,25 @@ class ConfirmGerminationView(discord.ui.View):
 
     @discord.ui.button(label="Understood — plant it", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Germinate the plant and post its living message in the chosen channel."""
-        await client.germinate_plant(self._guild_id, self._channel.id, time.time())
+        """Germinate the plant and post its living message in the chosen channel.
+
+        If another confirmation already germinated this guild's plant while
+        this view was open — two people confirming moments apart — this
+        dialog no longer applies: it says so instead of silently resetting the
+        plant that just came up (see :meth:`EpiphyteClient.germinate_plant`).
+        """
+        planted = await client.germinate_plant(self._guild_id, self._channel.id, time.time())
         self.stop()
+        if not planted:
+            await interaction.response.edit_message(
+                content=(
+                    "🌱 This server already has a plant now — another confirmation "
+                    "must have gone through first. This dialog no longer applies; "
+                    "run `/epiphyte-channel` again if you want to move the existing plant."
+                ),
+                view=None,
+            )
+            return
         await interaction.response.edit_message(
             content=(
                 f"🌱 The plant now lives in {self._channel.mention}. Activity anywhere "
@@ -845,14 +959,19 @@ async def epiphyte_channel(
 ) -> None:
     """Bind the plant's display channel and post its living message there.
 
-    A guild's very first binding does not germinate on the spot: it shows a
-    one-time persistence notice with a confirm button (see
-    :class:`ConfirmGerminationView`) so nobody creates a permanent plant by
-    accident. Rebinding an already-germinated plant to a new channel needs no
-    such confirmation and proceeds immediately, as before.
+    Restricted to members with Manage Channels or Administrator (see
+    :func:`require_manage_channels`) — both on a guild's very first binding
+    and on every later rebind, since either can move or create this permanent,
+    server-wide fixture. A guild's very first binding does not germinate on
+    the spot: it shows a one-time persistence notice with a confirm button
+    (see :class:`ConfirmGerminationView`) so nobody creates a permanent plant
+    by accident. Rebinding an already-germinated plant to a new channel needs
+    no such confirmation and proceeds immediately, as before.
     """
     guild_id = await require_guild(interaction)
     if guild_id is None:
+        return
+    if not await require_manage_channels(interaction):
         return
 
     if client.state(guild_id) is None:
