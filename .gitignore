@@ -1,5 +1,6 @@
 # Secrets
 .env
+prompts/*
 
 # Python
 __pycache__/

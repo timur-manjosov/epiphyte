@@ -9,19 +9,30 @@ Prompt, nicht über diese Datei. Im Konflikt gewinnt CLAUDE.md.
 
 ## Was das ist
 
-Epiphyte ist ein Discord-Bot, der in einem gewählten Kanal **eine einzige
-Pflanze** darstellt. Jede Nachricht wässert sie, Stille lässt sie über Zeit
-verdorren. Kein Utility-Bot, sondern ein Kunstprojekt mit einem ehrlichen
-Nebeneffekt: Die Pflanze zeigt ungeschönt, wie lebendig ein Kanal wirklich ist.
-**Jeder Server bekommt seinen eigenen, isolierten Pflanzenzustand** — keine
-geteilte, serverübergreifende Welt.
+> Epiphyte shows how alive a Discord server is, as a plant. One server, one
+> plant, one continuously accumulating measure of vitality — everything else
+> is derived from that single mechanism, not a second feature bolted on.
 
-Ab Phase 5 wandelt sich Epiphyte von einer Zustandsanzeige zu einem **emergenten
-Organismus**. Die Pflanze ist dann **keine Funktion ihrer momentanen Feuchtigkeit
-mehr, sondern das akkumulierte Ergebnis ihres ganzen Lebens.** Gleiche
-Feuchtigkeit bedeutet nicht mehr gleiche Form: Was einmal gewachsen ist, bleibt
-Teil des Körpers. Es gibt **keine Endform und keinen Endzustand** — die Pflanze
-wächst, kann sterben, und ihre Abstammung geht weiter.
+Das ist die These wörtlich — jede künftige Phase (neue Vitalitätsdimensionen,
+Artenwahl, Umwelt-Tönung, was auch immer) muss sich als **weitere Ableitung
+aus diesem einen Mechanismus** lesen lassen, nie als zweites, unabhängiges
+Feature. Details dazu unter „Zweite Entscheidungsregel: Emergenz".
+
+Epiphyte ist ein Discord-Bot, der pro Server **eine einzige Pflanze**
+darstellt, angezeigt in einem gewählten Kanal. Jede Nachricht wässert sie,
+Stille lässt sie über Zeit verdorren. Kein Utility-Bot, sondern ein
+Kunstprojekt mit einem ehrlichen Nebeneffekt: Die Pflanze zeigt ungeschönt,
+wie lebendig ein Server wirklich ist. **Jeder Server bekommt seinen eigenen,
+isolierten Pflanzenzustand** — keine geteilte, serverübergreifende Welt.
+
+Die Pflanze ist **keine Funktion ihrer momentanen Feuchtigkeit, sondern das
+akkumulierte Ergebnis ihres ganzen Lebens.** Gleiche Feuchtigkeit bedeutet
+nicht gleiche Form: Was einmal gewachsen ist, bleibt Teil des Körpers. Es gibt
+**keine Endform und keinen Endzustand** — die Pflanze wächst, kann sterben,
+und ihre Abstammung geht weiter. Das ist längst keine Vision mehr: Struktur,
+Genom, Wachstum, Dürre-Narben, Tod und Abstammung sowie Blüte/Samen/Epiphyte
+(Phasen 5–9) sind gebaut, commitet und aktueller Stand des Codes (siehe
+Phasenplan unten).
 
 ## Oberste Entscheidungsregel: das Rasiermesser
 
@@ -33,13 +44,92 @@ Tie-Breaker, kein Grund zu blockieren.
 
 ## Zweite Entscheidungsregel: Emergenz
 
-Tiefe entsteht durch **Regeln und Zeit**, nicht durch Commands und Optionen. Das
-ist die künstlerische These des Projekts: wenige Commands, keine
-Konfigurierbarkeit, keine Bestenlisten. Der Reichtum wohnt im **Verhalten des
-Systems über die Zeit**, nicht an der Oberfläche. Wo eine Idee entweder als neue
-Option oder als Regel im System ausgedrückt werden kann, gewinnt die Regel. Diese
-Regel steht neben dem Rasiermesser, nicht im Widerspruch dazu: beide halten die
-Oberfläche schmal und die Substanz im System.
+Tiefe entsteht durch **Regeln und Zeit**, nicht durch Commands und Optionen.
+Das ist die künstlerische These des Projekts — und sie hat zwei Hälften, die
+nie miteinander verwechselt werden dürfen. Eine frühere Fassung dieser Datei
+hat genau das getan (Minimalismus als Oberflächen-Regel mit Minimalismus als
+Substanz-Regel verwechselt); das hier ist die Korrektur, und sie gilt
+dauerhaft:
+
+1. **Oberflächen-Minimalismus (fix, nicht verhandelbar):** eine kleine, feste
+   Zahl an Commands über die gesamte Lebenszeit der Pflanze (aktuell drei:
+   `/plant`, `/epiphyte-channel`, `/help` — siehe `bot.py`), keine
+   Konfigurierbarkeit, kein Settings-Menü, keine Bestenliste, keine
+   privilegierten Gateway-Intents. Das regelt **wie der Mensch mit einem
+   lebendigen Ding interagiert** — nicht, wie reichhaltig dieses Ding selbst
+   sein darf.
+2. **Verhaltensreichtum (bewusst offen, soll über Jahre wachsen):** die Zahl
+   und Vielfalt echter, nicht-privilegierter Discord-Signale
+   (Nachrichtenautorschaft, Reaktionen, Sprachaktivität, Threads, zeitlicher
+   Rhythmus, Kanalbreite und weitere, noch nicht identifizierte), die je eine
+   eigene botanische Dimension **derselben einen Pflanze** antreiben dürfen.
+   **Mehr Signale sind keine Verletzung der These — eine zweite, unabhängige
+   Funktion oder ein zweiter Mechanismus wäre es.**
+
+Der Reichtum wohnt im **Verhalten des Systems über die Zeit**, nicht an der
+Oberfläche — und „Verhalten" heißt hier ausdrücklich: je mehr ehrliche
+Signale einfließen, desto reicher darf die eine Pflanze werden. **„Wenige
+Signale" ist niemals treuer zur These als „viele Signale"**; die These
+handelt von der Oberfläche (Commands, Konfiguration), nicht von der Substanz
+(was die Pflanze aus dem Leben des Servers macht). Ein Vorschlag, der
+Reichtum kürzt, um „minimalistisch" zu bleiben, hat die These falsch
+verstanden — genauso falsch wie ein Vorschlag, der einen zweiten Command
+oder ein Einstellungsmenü einführt, um Reichtum zu „ermöglichen". Wo eine
+Idee entweder als neue Option/neuer Command oder als Regel im bestehenden
+Mechanismus ausgedrückt werden kann, gewinnt **immer** die Regel im
+Mechanismus — nie die Option, und auch nicht „eine weitere Dimension" als
+Vorwand für eine zweite Oberfläche.
+
+### Der Zulassungstest für ein neues Vitalitätssignal
+
+Das ist die eigentliche Leitplanke gegen als Reichtum getarnten
+Feature-Creep — nicht die Signalzahl. Bevor irgendein Discord-Signal jenseits
+des schon gebauten (Nachrichten → Feuchtigkeit) eine botanische Dimension
+antreiben darf, muss es **alle drei** Kriterien erfüllen:
+
+1. **Keine privilegierten Intents:** nur nicht-privilegierte
+   Gateway-Ereignisse (Reaktions-, Voice-State-, Thread-Events zählen dazu;
+   das Lesen von Nachrichteninhalt nicht).
+2. **Akkumuliert über echte Zeit, statt auf ein einzelnes Ereignis zu
+   reagieren:** ein einzelner Spot-Event darf höchstens einen winzigen,
+   wieder zerfallenden Beitrag leisten, nie direkt einen dauerhaften
+   Strukturzustand auslösen — spiegelbildlich zu Feuchtigkeit, die zerfällt,
+   und Wachstum, das in diskreten Schritten voranschreitet.
+3. **Für eine einzelne Person allein nicht farmbar:** dasselbe
+   abnehmende-Grenzerträge-Prinzip wie beim Gießen (Phase 3,
+   `effective_water_amount` in `moisture.py`) muss greifen oder sinngemäß
+   übertragbar sein.
+
+Konkret an einem noch nicht gebauten Signal durchgespielt, damit der Test
+kein Lippenbekenntnis bleibt: **Reaktionen** bestehen den Test, wenn sie —
+wie das Gießen selbst — nur mit Fenster und Falloff pro reagierender Person
+gezählt werden, sodass das Signal echte Breite über mehrere Leute misst.
+Ein naiver Entwurf wie „Anzahl der Reaktionen, die eine einzelne Person
+heute vergeben hat" **besteht den Test nicht**: eine Person kann allein auf
+beliebig viele eigene oder fremde Nachrichten reagieren und das Signal ohne
+jede zweite Person füllen. Ein solcher Entwurf ist entweder zu verwerfen oder
+um genau dasselbe Person-Fenster-Falloff-Muster zu ergänzen, bevor er
+überhaupt zugelassen wird — dieselbe Regel, die schon das Gießen ehrlich
+macht.
+
+### Die Aura-Parallele
+
+Epiphyte folgt demselben Muster wie Aura, das andere Projekt des
+Maintainers: **ein Mechanismus, mehrere abgeleitete Funktionen bzw.
+Dimensionen.** Aura leitet Abfrage, proaktive Entlastung, Onboarding und
+Digest aus einem einzigen destillierten Faktenmodell ab. Epiphyte leitet
+(heute) Struktur, feuchtigkeits-modulierte Erscheinung, Dürre-Vernarbung und
+Lebenszyklus aus einem einzigen Vitalitätsmechanismus ab — mit Raum für viele
+weitere botanische Dimensionen aus zusätzlichen ehrlichen Signalen, sofern sie
+den Zulassungstest oben bestehen. Das ist keine Dekoration, sondern die
+knappste Erinnerung dagegen, aus „wenige Commands" fälschlich „wenige
+Signale" oder „wenig Substanz" abzuleiten.
+
+Diese Regel steht neben dem Rasiermesser, nicht im Widerspruch dazu: das
+Rasiermesser hält die *Umsetzung* der aktuell zugelassenen Idee einfach; diese
+Regel hält die *Oberfläche* schmal, während die *Substanz* im System über
+Jahre wachsen darf. Beide zusammen halten die Oberfläche schmal und die
+Substanz im System — nicht die Substanz selbst schmal.
 
 ## Goldene Regeln (nicht verhandelbar)
 
@@ -95,8 +185,11 @@ Oberfläche schmal und die Substanz im System.
 ## Phasenplan — eine Phase komplett abschließen, bevor die nächste beginnt
 
 **Phase 0–4 sind abgeschlossen und als `v1.0.0` veröffentlicht** — die Pflanze als
-lebende Zustandsanzeige. Ab Phase 5 beginnt die Wandlung zum emergenten
-Organismus. Die neuen Stufen sind bewusst als **offene, endlose Entwicklung**
+lebende Zustandsanzeige. **Phase 5–9 sind ebenfalls vollständig im Code gebaut
+und commitet** — der emergente Organismus ist der aktuelle Stand von
+`structure.py`, `render.py`, `storage.py` und `bot.py`, keine offene
+Baustelle mehr; sie warten lediglich noch auf einen eigenen benannten
+Release. Die Stufen danach sind bewusst als **offene, endlose Entwicklung**
 angelegt.
 
 **Abgeschlossen (v1.0.0):**
@@ -111,47 +204,64 @@ angelegt.
 - **Phase 4 — Politur & Release ✓:** README, Lizenz, CONTRIBUTING.md,
   Screenshots/GIFs.
 
-**Offen — der Organismus (endlose Entwicklung):**
+**Abgeschlossen im Code (noch ohne eigenen Versions-Tag):**
 
-- **Phase 5 — Der Körper:** akkumulierende, individuelle Struktur. `structure.py`
-  mit Datenmodell (Knoten mit Eltern-Verweisen), Genom (deterministisch aus einem
-  Seed) und `grow()` als reine, seeded-deterministische Wachstumsfunktion; die
-  Struktur wird persistiert. *Fertig, wenn* zwei Pflanzen bei gleicher
-  Feuchtigkeit sichtbar verschiedene, aus ihrer eigenen Geschichte gewachsene
-  Formen zeigen.
-- **Phase 6 — Das Eigenleben:** autonome Aktualisierung im Kanal. APScheduler
-  taktet die feuchtigkeits-gegateten Wachstumsschritte und rendert die Pflanze
-  selbstständig neu. *Fertig, wenn* die Pflanze ohne jeden Command sichtbar über
-  Tage wächst und verdorrt.
-- **Phase 7 — Die Biografie:** Vitalität vs. Körper. Die Feuchtigkeit hinterlässt
-  Spuren im Körper — Narben, Blattfall —, statt nur die momentane Form zu setzen.
-  *Fertig, wenn* eine durchlittene Dürre auch nach der Erholung noch am Körper
-  ablesbar bleibt.
-- **Phase 8 — Der Lebenszyklus:** Tod, Same, Abstammung. Eine Pflanze kann
-  sterben, einen Samen hinterlassen und so ihre Linie fortsetzen. *Fertig, wenn*
-  aus einer toten Pflanze eine neue Generation mit verwandtem Genom hervorgeht.
-- **Phase 9 — Emergente Meilensteine:** Blüte und die namensgebende Epiphyte, die
-  auf einem hinreichend alten Baum siedelt. *Fertig, wenn* seltene, nicht
-  erzwingbare Ereignisse allein aus anhaltender Gesundheit entstehen.
+- **Phase 5 — Der Körper ✓:** akkumulierende, individuelle Struktur in
+  `structure.py` — Datenmodell (`Node` mit Eltern-Verweis), `Genome`
+  (deterministisch aus einem Seed via `genome_from_seed`) und `grow()` als
+  reine, seeded-deterministische Wachstumsfunktion; die Struktur wird über
+  `storage.py` persistiert. `lsystem.py` ist bereits vollständig entfernt.
+  Zwei Pflanzen bei gleicher Feuchtigkeit zeigen sichtbar verschiedene, aus
+  ihrer eigenen Geschichte gewachsene Formen.
+- **Phase 6 — Das Eigenleben ✓:** `bot.py` taktet über `AsyncIOScheduler`
+  einen `metabolic_tick`, der die feuchtigkeits-gegateten Wachstumsschritte
+  auslöst und die Pflanze selbstständig neu rendert — sichtbar über Tage,
+  ganz ohne Command.
+- **Phase 7 — Die Biografie ✓:** `DIEBACK_MOISTURE_THRESHOLD` und
+  `_dieback_step` in `structure.py` lassen eine durchlittene Dürre als
+  permanente Narbe zurück — tote Knoten (`NodeState.DEAD`) werden nie entfernt
+  und nie wiederbelebt, bleiben also auch nach der Erholung sichtbar.
+- **Phase 8 — Der Lebenszyklus ✓:** `is_dead`, `germinate_successor` und
+  `mutate` in `structure.py`, zusammen mit `dead_ticks` in `storage.py`,
+  lassen aus einer toten Pflanze eine neue Generation mit einfach mutiertem,
+  verwandtem Genom hervorgehen.
+- **Phase 9 — Emergente Meilensteine ✓:** `is_blooming`, `has_seeded` und
+  `can_host_epiphyte` in `structure.py` lassen Blüte, Samen und die
+  namensgebende Epiphyte allein aus angehäufter, nicht erzwingbarer Gesundheit
+  entstehen (Reserve-Bank, Mindestgröße, Mindestalter).
+
+**Offen:**
+
 - **Phase 10 (optional) — Die Umwelt:** Tages- und Jahreszeit-Tönung des
-  gerenderten Bildes.
+  gerenderten Bildes. Noch nicht begonnen — in `render.py` gibt es aktuell
+  keine Zeit- oder Jahreszeit-Tönung.
+- **Weitere, noch unbenannte Phasen:** zusätzliche Vitalitätssignale (siehe
+  „Zulassungstest für ein neues Vitalitätssignal" oben) und die botanischen
+  Dimensionen, die sie antreiben — z. B. Reaktionen, Sprachaktivität,
+  Threads, zeitlicher Rhythmus, Kanalbreite.
 
 **Es gibt keinen definierten letzten Schritt.** Der Phasenplan bleibt bewusst
 offen; weitere Stufen dürfen entstehen, solange sie der Emergenz-These treu
-bleiben.
+bleiben — als weitere Ableitung aus dem einen Vitalitätsmechanismus, nie als
+zweites Feature.
 
 ## Zielstruktur (wächst mit den Phasen — nichts davon vorab anlegen)
 
 ```
 epiphyte/
-├── bot.py          # dünner discord-Adapter: Client, Commands, Events, Scheduler-Verdrahtung
-├── moisture.py     # REINE LOGIK: Feuchtigkeit/Vitalität — Zerfall & Fairness    [ab Phase 1]
-├── structure.py    # REINE LOGIK: Struktur, Genom (aus Seed), grow()            [ab Phase 5]
-├── render.py       # Struktur → PNG via Pillow (gekapselte I/O)                  [ab Phase 2]
-├── storage.py      # SQLite: Struktur, Seed, Lebensstatistik, Feuchtigkeit (I/O) [ab Phase 3]
-├── tests/          # pytest, ausschließlich für die reine Logik                  [ab Phase 1]
+├── bot.py               # dünner discord-Adapter: Client, Commands, Events,
+│                        #   Scheduler-Verdrahtung (metabolic_tick)
+├── moisture.py          # REINE LOGIK: Feuchtigkeit/Vitalität — Zerfall & Fairness      [Phase 1]
+├── structure.py         # REINE LOGIK: akkumulierte Struktur, Genom (aus Seed), grow(),
+│                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte  [Phase 5–9]
+├── render.py            # Struktur → PNG via Pillow (gekapselte I/O)                    [Phase 2, erweitert 5–9]
+├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
+│                        #   Kanal/Nachricht, dead_ticks (I/O)                     [Phase 3, erweitert 5–9]
+├── tests/               # pytest, ausschließlich für die reine Logik                    [ab Phase 1]
 ├── requirements.txt
+├── requirements-dev.txt # pytest, reine Dev-Abhängigkeit, getrennt von der Laufzeit      [Phase 1]
 ├── README.md
+├── CONTRIBUTING.md
 ├── LICENSE
 ├── .gitignore
 └── CLAUDE.md
@@ -160,14 +270,34 @@ epiphyte/
 Ein neues Modul entsteht erst, wenn die Phase seine Funktion wirklich braucht.
 Bis dahin bleibt alles Existierende so klein wie möglich.
 
-`structure.py` löst ab Phase 5 die Rolle von `lsystem.py` ab: Statt eine Form
-allein aus der momentanen Stufe zu erzeugen, hält es die über das ganze Leben
-**akkumulierte** Struktur. `lsystem.py` gehört zum v1.0.0-Modell (Form aus Stufe)
-und wird von `structure.py` abgelöst. `moisture.py` bleibt unverändert die
-Vitalität; `storage.py` persistiert nun Struktur, Seed und Lebensstatistik statt
-nur eines einzelnen Floats. Die Orchestrierung — Uhr lesen, fällige Schritte
-bestimmen, reine Funktionen aufrufen, Ergebnis persistieren — bleibt vollständig
-im dünnen Adapter `bot.py`.
+`structure.py` hat die Rolle von `lsystem.py` bereits abgelöst und ist aus dem
+Repo entfernt: Statt eine Form allein aus der momentanen Stufe zu erzeugen,
+hält `structure.py` die über das ganze Leben **akkumulierte** Struktur —
+inklusive Dieback, Lebenszyklus (Tod, Nachfolge) und Meilensteinen (Blüte,
+Samen, Epiphyte). `moisture.py` bleibt unverändert die Vitalität; `storage.py`
+persistiert Struktur, Seed, Lebensstatistik, Lineage und Kanal-/Nachrichtenstatus
+statt nur eines einzelnen Floats. Die Orchestrierung — Uhr lesen, fällige
+Schritte bestimmen, reine Funktionen aufrufen, Ergebnis persistieren — bleibt
+vollständig im dünnen Adapter `bot.py`.
+
+### Vitalitätssignale: gebaut vs. entworfen
+
+Damit die Lücke zwischen These und Implementierung nicht in Prosa untergeht:
+
+| Signal → Dimension | Status |
+|---|---|
+| Nachrichten (Autorschaft, Häufigkeit) → Feuchtigkeit, Wachstum | **live** (`moisture.py`, `on_message` in `bot.py`) |
+| Feuchtigkeits-Zerfall über verstrichene Zeit → Verdorren | **live** (`moisture.decay`) |
+| Abnehmende Grenzerträge pro Person/Fenster → Anti-Farming | **live** (`moisture.effective_water_amount`) |
+| Reaktionen → eigene Dimension | entworfen, noch nicht gebaut |
+| Sprachaktivität (Voice) → eigene Dimension | entworfen, noch nicht gebaut |
+| Threads → eigene Dimension | entworfen, noch nicht gebaut |
+| Zeitlicher Rhythmus (Tages-/Wochengang) → eigene Dimension | entworfen, noch nicht gebaut |
+| Kanalbreite (wie viele verschiedene Kanäle aktiv sind) → eigene Dimension | entworfen, noch nicht gebaut |
+
+Jedes „entworfen, noch nicht gebaut"-Signal muss vor der Implementierung den
+Zulassungstest oben bestehen (keine privilegierten Intents, akkumuliert über
+echte Zeit, für eine Einzelperson nicht farmbar).
 
 ## Reine Logik ⟷ I/O (das Herz der Struktur)
 
