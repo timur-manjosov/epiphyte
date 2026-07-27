@@ -1,4 +1,4 @@
-"""Tests for the Discord-adapter behaviour added in Phase B.
+"""Tests for the Discord-adapter hardening added after Phase 9.
 
 Covers channel-unreachable tracking, the germination confirmation gate and
 help pagination — all in ``bot.py``, which is otherwise untested since it is
