@@ -174,6 +174,7 @@ lives in the code or repository.
 |---|---|
 | `/epiphyte-channel #channel` | Choose the channel the plant is displayed in, and post its living message there. |
 | `/plant` | Show a private snapshot now, and re-anchor the living message if it has scrolled away. Never grows the plant — the heartbeat does that. |
+| `/help` | A private, paginated explanation of what Epiphyte is and what its commands do. |
 
 ## Development
 
