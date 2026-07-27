@@ -16,8 +16,9 @@ import asyncio
 import io
 from unittest.mock import AsyncMock, MagicMock
 
-import bot
 import discord
+
+import bot
 import moisture
 import render
 import storage

@@ -1,5 +1,7 @@
 """Tests for the pure moisture logic. No Discord involved."""
 
+from itertools import pairwise
+
 import pytest
 
 from moisture import (
@@ -90,7 +92,7 @@ def test_effective_water_amount_first_is_base() -> None:
 def test_effective_water_amount_strictly_decreasing() -> None:
     """Each further watering within a window adds strictly less."""
     amounts = [effective_water_amount(k) for k in range(8)]
-    assert all(later < earlier for earlier, later in zip(amounts, amounts[1:]))
+    assert all(later < earlier for earlier, later in pairwise(amounts))
 
 
 def test_effective_water_amount_bounded_sum() -> None:

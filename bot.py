@@ -104,7 +104,7 @@ PRESENCE_ROTATE_MINUTES = 10
 #: Rotating status lines the bot "speaks" through its presence. Each pairs an
 #: activity type with either a fixed string or a callable that builds one from
 #: live data already on hand (e.g. the guild count) — no extra lookups needed.
-PRESENCE_ACTIVITIES: tuple[tuple[discord.ActivityType, str | Callable[["EpiphyteClient"], str]], ...] = (
+PRESENCE_ACTIVITIES: tuple[tuple[discord.ActivityType, str | Callable[[EpiphyteClient], str]], ...] = (
     (discord.ActivityType.playing, "growing quietly"),
     (discord.ActivityType.watching, "the light"),
     (discord.ActivityType.playing, "photosynthesizing"),
