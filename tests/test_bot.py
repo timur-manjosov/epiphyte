@@ -752,3 +752,121 @@ def test_a_rebirth_leaves_the_successor_unrooted() -> None:
     assert client._voice_activity(1, 0.0) == 0.0
     assert 1 not in client._voice_sessions
     assert not client._voice_seconds and not client._voice_windows
+
+
+# --- 5: set_channel serialized against an in-flight refresh (adversarial
+# consolidation pass, Phase 18) -----------------------------------------------
+#
+# refresh_channel_message's final write only patches message_id onto whatever
+# state is current at that moment, trusting channel_id to already be right.
+# Found by simulating a moderator rebinding the guild's channel while the
+# metabolic tick is mid-flight, still awaiting Discord's response to a post in
+# the *old* channel: without set_channel holding the same per-guild message
+# lock refresh_channel_message and reanchor_channel_message already hold, the
+# tick's delayed write can land after the rebind and pair the *new*
+# channel_id with a message_id that was actually posted to the *old* channel
+# — an orphaned message left behind, and a state that self-heals only on the
+# next tick's discord.NotFound. This reproduces that interleaving directly
+# (rather than asserting on a timing coincidence) and checks the invariant
+# the fix restores: message_id, whenever set, always names a message that was
+# posted to the channel currently recorded as channel_id.
+
+
+def test_rebind_racing_an_in_flight_refresh_does_not_mismatch_channel_and_message() -> None:
+    """A rebind that lands while a tick's post to the old channel is still in
+    flight must never leave the new channel_id paired with the old message."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    old_channel_id, new_channel_id = 100, 200
+    client._states[guild_id] = _make_state(guild_id=guild_id, channel_id=old_channel_id)
+    client._render_bytes = AsyncMock(return_value=b"fake-png")
+
+    send_gate = asyncio.Event()
+    old_message = MagicMock()
+    old_message.id = 999
+
+    async def _delayed_send(*_args, **_kwargs) -> MagicMock:
+        await send_gate.wait()  # simulate the in-flight Discord network call
+        return old_message
+
+    old_channel = _make_channel(channel_id=old_channel_id)
+    old_channel.send = AsyncMock(side_effect=_delayed_send)
+    new_channel = _make_channel(channel_id=new_channel_id)
+
+    async def _resolve(channel_id: int) -> MagicMock:
+        return old_channel if channel_id == old_channel_id else new_channel
+
+    client._text_channel = AsyncMock(side_effect=_resolve)
+
+    async def scenario() -> None:
+        refresh_task = asyncio.create_task(client.refresh_channel_message(guild_id))
+        await asyncio.sleep(0)  # let it block inside old_channel.send()
+
+        # Fired concurrently, not awaited inline: set_channel now waits on the
+        # same lock refresh_channel_message holds for its whole body.
+        rebind_task = asyncio.create_task(client.set_channel(guild_id, new_channel_id))
+        await asyncio.sleep(0)
+
+        send_gate.set()  # let the delayed post resolve
+        await refresh_task
+        await rebind_task
+
+    asyncio.run(scenario())
+
+    final = client._states[guild_id]
+    assert final.channel_id == new_channel_id
+    # message_id 999 was posted to old_channel_id; it must never be paired
+    # with new_channel_id — either it is cleared (the rebind ran after the
+    # tick's write and correctly wiped it) or, if seen before the rebind,
+    # message_id would still correctly refer to the old channel. Both are
+    # fine; the one forbidden outcome is exactly the one this test pins down.
+    assert not (final.channel_id == new_channel_id and final.message_id == old_message.id)
+
+
+# --- 6: a watering racing the metabolic tick's own state read (adversarial
+# consolidation pass, Phase 18) ------------------------------------------------
+#
+# advance_life reads its guild's state once at the top, then awaits several
+# lookups (breadth, rhythm, reaction warmth, thread depth, the voice-presence
+# prune) before its final store. Every one of those is real I/O
+# (asyncio.to_thread against SQLite), so a message's watering — itself
+# atomic, since water_plant reads-then-stores with no await in between, see
+# _store's docstring — can land in that window. Storing the moisture computed
+# from the stale pre-watering snapshot on top of it would silently discard
+# the watering; this pins down that the tick instead folds it in.
+
+
+def test_a_watering_that_lands_mid_tick_is_not_silently_dropped(monkeypatch) -> None:
+    """A message arriving while advance_life awaits its internal lookups must
+    still show up in the moisture the tick finally stores."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now0 = 1_000_000.0
+    client._states[guild_id] = storage.GuildState(
+        guild_id=guild_id, structure=structure.germinate(seed=1),
+        moisture=0.5, last_update=now0, channel_id=100, message_id=None,
+    )
+    monkeypatch.setattr(bot.time, "time", lambda: now0 + 10)
+
+    real_guild_rhythm = client._guild_rhythm
+
+    async def _slow_guild_rhythm(guild_id: int, now: float) -> float:
+        await asyncio.sleep(0)  # yields control -- a message can land here
+        return await real_guild_rhythm(guild_id, now)
+
+    client._guild_rhythm = _slow_guild_rhythm
+
+    async def scenario() -> None:
+        tick_task = asyncio.create_task(client.advance_life(guild_id, now0 + 10))
+        await asyncio.sleep(0)  # let the tick get into its awaited lookups
+        await client.water_plant(guild_id, user_id=42, now=now0 + 10)
+        await tick_task
+
+    asyncio.run(scenario())
+
+    final = client._states[guild_id]
+    decay_only = moisture.decay(0.5, 10.0)
+    assert final.moisture > decay_only, (
+        "the concurrent watering must be reflected in the tick's final store, "
+        "not overwritten by a value computed before it landed"
+    )

@@ -29,6 +29,7 @@ an adjective. Everything else here stays pure.
 
 import inspect
 from collections.abc import Sequence
+from itertools import pairwise
 
 from PIL import Image
 
@@ -147,7 +148,7 @@ def test_the_curve_starts_almost_imperceptibly_and_only_opens_up_near_saturation
 
 def test_root_spread_is_monotone_and_bounded():
     scores = [root_spread(i / 40) for i in range(41)]
-    assert all(b >= a for a, b in zip(scores, scores[1:]))
+    assert all(b >= a for a, b in pairwise(scores))
     assert scores[0] == 0.0 and scores[-1] == 1.0
     assert root_spread(-5.0) == 0.0 and root_spread(5.0) == 1.0  # clamped, never extrapolated
 

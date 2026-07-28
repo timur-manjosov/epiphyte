@@ -165,6 +165,35 @@ Substanz im System — nicht die Substanz selbst schmal.
   per `copy_global_to` in diese Guild kopieren und dort synchronisieren (sofort
   sichtbar); sonst globaler Sync (Sichtbarkeit kann bis zu 1 h dauern).
 
+## Geltungsbereich: serverweit, nicht kanalweit
+
+**Die Pflanze ist ein serverweiter Organismus; der gebundene Kanal ist ihr
+Schaufenster, nie ein Scope-Filter.** Das war seit Phase 3 (Feuchtigkeit) immer
+schon wahr und ist inzwischen für alle fünf Vitalitätssignale gleichermaßen
+wahr — bislang nur nie als Prinzip benannt, sondern nur durch konsequent
+gleiche Umsetzung entstanden. Diese Sektion macht es verbindlich, statt es bei
+zufälliger Konsistenz zu belassen.
+
+Konkret: `channel_id` in `plant_state` ist die **einzige** kanalgebundene
+Spalte im ganzen Schema, und sie bedeutet ausschließlich „hier wird die
+lebende Nachricht angezeigt". Jedes Signal wässert, zählt oder gewichtet
+serverweit — `on_message`, `on_raw_reaction_add` und `on_voice_state_update`
+prüfen nur, *dass* der Server überhaupt eine Pflanze hat, nie, in welchem
+Kanal etwas passiert ist. `thread_id` in `thread_activity` ist davon zu
+unterscheiden: das ist die Identität des einzelnen Threads (welche Zeilen zu
+welchem Thread gehören), kein Scope-Filter auf einen Kanal.
+
+**Für jedes künftige Signal oder jeden künftigen Mechanismus gilt dieselbe
+Vorgabe per Default:** serverweit erfassen, nie auf den gebundenen Kanal oder
+einen anderen einzelnen Kanal einschränken. Eine kanalgebundene Ausnahme
+bräuchte eine ausdrückliche Begründung, die über „so ist es zufällig
+implementiert" hinausgeht — z. B. ein Signal, dessen Bedeutung sich ohne
+Kanalbezug gar nicht sinnvoll definieren lässt (denkbar für die in der
+Signaltabelle unten als „entworfen, noch nicht gebaut" geführte Kanalbreite,
+die *per Definition* mehrere Kanäle vergleicht statt sie zu einem Server-Wert
+zusammenzufassen — dort wäre der Kanalbezug die Substanz des Signals selbst,
+keine zufällige Abweichung von dieser Regel).
+
 ## Zeitmodell (zwei Uhren)
 
 - **Feuchtigkeit zerfällt lazy** über den gespeicherten Zeitstempel — exakt aus

@@ -549,10 +549,22 @@ class EpiphyteClient(discord.Client):
         channel; rebinding to the same channel is a no-op. A guild with no plant
         yet is a no-op here too — first-time germination is a separate, confirmed
         step (see :meth:`germinate_plant`), not something this silently does.
+
+        Holds the guild's :meth:`_message_lock`, the same one
+        :meth:`refresh_channel_message` and :meth:`reanchor_channel_message` hold
+        for their whole body: without it, a rebind racing an in-flight metabolic
+        tick could complete while that tick is still awaiting Discord's response
+        to a post in the *old* channel, so its own later write — which only
+        patches in the freshly posted message id — would land on top of this
+        method's already-stored new ``channel_id``, pairing a new channel with a
+        message that was actually posted in the old one. The lock instead makes
+        the two run one after the other, however they interleave: no in-flight
+        post ever gets attributed to a channel it wasn't sent to.
         """
-        state = self._states.get(guild_id)
-        if state is not None and state.channel_id != channel_id:
-            await self._store(replace(state, channel_id=channel_id, message_id=None))
+        async with self._message_lock(guild_id):
+            state = self._states.get(guild_id)
+            if state is not None and state.channel_id != channel_id:
+                await self._store(replace(state, channel_id=channel_id, message_id=None))
 
     async def water_plant(self, guild_id: int, user_id: int, now: float) -> None:
         """Water a guild's plant with diminishing returns for the author.
@@ -1041,7 +1053,21 @@ class EpiphyteClient(discord.Client):
         grown = structure.grow(
             state.structure, genome, current, 1, breadth, rhythm, reaction_warmth, thread_depth
         )
-        await self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
+        # Re-read rather than reuse the `state` snapshot from the top of this
+        # method: the four lookups and the prune above each await real I/O, and
+        # a message's watering (water_plant, atomic in its own right — see
+        # _store's docstring) can land in that window. Storing `current` — the
+        # decay computed from the pre-watering snapshot — on top of that would
+        # silently discard the watering. Decaying the *latest* moisture to
+        # `now` instead folds it in when one landed, and is identical to
+        # `current` when none did. The structure this tick grew still stands:
+        # growth's pace was correctly decided by the moisture this tick began
+        # with, not one a race happened to advance mid-computation.
+        latest = self._states[guild_id]
+        fresh_moisture = moisture.decay(latest.moisture, now - latest.last_update)
+        await self._store(
+            replace(latest, structure=grown, moisture=fresh_moisture, last_update=now, dead_ticks=0)
+        )
 
     async def on_message(self, message: discord.Message) -> None:
         """Water the plant when a message arrives anywhere in a guild with a plant.
