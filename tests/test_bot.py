@@ -870,3 +870,41 @@ def test_a_watering_that_lands_mid_tick_is_not_silently_dropped(monkeypatch) -> 
         "the concurrent watering must be reflected in the tick's final store, "
         "not overwritten by a value computed before it landed"
     )
+
+
+# --- 7: reaction windows never swept (final pre-deployment stress test) ------
+#
+# _prune_watering_windows exists precisely so a (guild, person) pair that
+# watered or voice-credited once, long ago, does not sit in memory for the
+# bot's entire uptime -- it sweeps self._windows and self._voice_windows every
+# tick. self._reaction_windows is the same kind of per-person diminishing-
+# returns bookkeeping (see _water_reactor_presence, which mirrors
+# _water_author_presence and _water_voice_presence exactly), but was missing
+# from that sweep: every distinct (guild, reactor) pair that has ever reacted
+# a single non-self reaction stayed in memory forever, unlike its two
+# siblings. Over the lifetime of a long-running bot serving many guilds, that
+# is unbounded memory growth from ordinary use, not just malicious flooding.
+
+
+def test_prune_watering_windows_sweeps_reaction_windows_too() -> None:
+    """A long-elapsed reaction window must be dropped exactly like its message
+    and voice siblings are -- reaction presence is not a special case."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now = 0.0
+    for person_id in range(50):
+        client._windows[(guild_id, person_id)] = bot.WateringWindow(now, 1)
+        client._voice_windows[(guild_id, person_id)] = bot.WateringWindow(now, 1)
+        client._reaction_windows[(guild_id, person_id)] = bot.WateringWindow(now, 1)
+
+    long_after = now + moisture.WATERING_WINDOW_SECONDS * 10
+    client._prune_watering_windows(long_after)
+
+    assert client._windows == {}
+    assert client._voice_windows == {}
+    assert client._reaction_windows == {}, (
+        "reaction windows must be swept once their window has fully elapsed, "
+        "exactly like message and voice windows -- otherwise every distinct "
+        "reactor a guild has ever seen stays in memory for the bot's entire "
+        "uptime"
+    )

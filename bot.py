@@ -1128,11 +1128,11 @@ class EpiphyteClient(discord.Client):
         Purely a memory sweep, never a behaviour change: an elapsed window is one
         :func:`moisture.next_watering` would reset on its next use anyway, so
         dropping it here cannot hand anybody back a fresh full-strength watering
-        they had not already earned by waiting. The voice windows are swept
-        alongside the message ones for the same reason, together with any
-        sub-credit voice fragment left over from a call that ended long ago.
+        they had not already earned by waiting. The voice and reaction windows
+        are swept alongside the message ones for the same reason, together with
+        any sub-credit voice fragment left over from a call that ended long ago.
         """
-        for windows in (self._windows, self._voice_windows):
+        for windows in (self._windows, self._voice_windows, self._reaction_windows):
             expired = [
                 key
                 for key, window in windows.items()
