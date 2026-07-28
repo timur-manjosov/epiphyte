@@ -45,6 +45,21 @@ breadth and rhythm — a channel whose conversations regularly spin off into
 sustained threads grows a more deeply nested branch structure than one whose
 activity stays flat, at the same size and the same crown width.
 
+Phase 17 adds a fifth, and the quietest: time spent together in voice channels.
+``on_voice_state_update`` — like every event above, a standard gateway event,
+and already covered by ``discord.Intents.default()``, which enables
+``voice_states`` (only ``members``, ``presences`` and ``message_content`` are
+privileged, and all three stay off) — tracks who is *audibly* in each voice
+channel, and time only accrues while at least ``structure.VOICE_MIN_AUDIBLE``
+people are audible in the same one, so idling alone earns nothing. Each
+``structure.VOICE_CREDIT_SECONDS`` of that shared time becomes one credit
+through the same per-person diminishing-returns window watering uses. The
+resulting reading (``_voice_activity``, read the same way author breadth and
+reaction warmth are) never reaches ``structure.grow`` at all: it is handed to
+``render.render``, where it draws the plant's root system and thickens its trunk
+base. That is what makes it independent of breadth, rhythm and thread depth by
+construction rather than by calibration — it shares no term with any of them.
+
 Everything the plant says about itself, it says in the first person: the living
 message's heading and text are spoken by ``voice``, which reads them from the
 body and the moisture. Where those words land — the accent colour, which
@@ -147,6 +162,49 @@ class WateringWindow:
 
     window_start: float
     count: int
+
+
+@dataclass
+class VoiceSession:
+    """Who is currently audible in one voice channel, and since when.
+
+    ``audible`` holds the user ids that pass :func:`structure.voice_is_audible`
+    right now; ``since`` is the moment that set last changed (or was last
+    settled), so the interval between then and now is one stretch during which
+    the room's headcount was constant — which is exactly what
+    :func:`structure.shared_voice_seconds` needs to judge.
+
+    Kept in memory only, like :class:`WateringWindow`. A restart therefore
+    forgets any call in progress and starts counting again from the next voice
+    event; against a week-long presence half-life that loses at most one
+    session's fragment, and rebuilding it would mean reading the guild's voice
+    channel membership on startup, which is a good deal more machinery than the
+    inaccuracy is worth.
+    """
+
+    audible: set[int]
+    since: float
+
+
+def _audible_channel_id(state: discord.VoiceState, afk_channel_id: int | None) -> int | None:
+    """Return the voice channel this state counts as audibly present in, else ``None``.
+
+    The whole judgement is :func:`structure.voice_is_audible`'s; this only maps
+    Discord's four separate flags onto its two. Each pair is OR'd because the
+    self-set and the server-set flag mean the same thing here — someone muted by
+    a moderator contributes exactly as much to a conversation as someone who
+    muted themselves, which is nothing.
+    """
+    channel = state.channel
+    if channel is None:
+        return None
+    audible = structure.voice_is_audible(
+        connected=True,
+        muted=state.mute or state.self_mute,
+        deafened=state.deaf or state.self_deaf,
+        in_afk_channel=afk_channel_id is not None and channel.id == afk_channel_id,
+    )
+    return channel.id if audible else None
 
 
 def build_plant_embed(moisture_value: float, plant: structure.Structure) -> discord.Embed:
@@ -295,9 +353,14 @@ class EpiphyteClient(discord.Client):
     """Discord client with its own command tree (slash commands only).
 
     Uses the default intents exclusively: the bot only needs to know *that* a
-    message arrived, never *what* it said. Per-guild plant state is loaded from
-    SQLite on startup and written back on every change; the per-person watering
-    windows are kept in memory. An APScheduler job drives the metabolic tick.
+    message arrived, never *what* it said. That set already includes
+    ``voice_states``, which Phase 17 needs — ``Intents.default()`` is every
+    intent except the three privileged ones (``members``, ``presences``,
+    ``message_content``), all of which stay off, so no phase so far has had to
+    ask for a new intent and none of them is gated behind Discord's
+    verification. Per-guild plant state is loaded from SQLite on startup and
+    written back on every change; the per-person watering windows are kept in
+    memory. An APScheduler job drives the metabolic tick.
     """
 
     def __init__(self) -> None:
@@ -330,6 +393,23 @@ class EpiphyteClient(discord.Client):
         #: life is plain counts and timestamps, not a value that fades over
         #: weeks (see storage.py's module docstring).
         self._thread_activity: dict[int, dict[int, dict[int, tuple[int, float, float]]]] = {}
+        #: Per guild, per person: (presence weight, last_seen) earned by genuine
+        #: shared voice time. Mirrors ``self._author_presence`` exactly, just fed
+        #: from voice credits rather than messages; feeds ``render`` (not
+        #: ``structure.grow``) via ``_voice_activity``.
+        self._voice_presence: dict[int, dict[int, tuple[float, float]]] = {}
+        #: Per-person diminishing-returns window for voice credits, kept apart
+        #: from the message and reaction windows for the same reason those two
+        #: are kept apart from each other: talking, posting and reacting are
+        #: separate actions, each with its own curve.
+        self._voice_windows: dict[tuple[int, int], WateringWindow] = {}
+        #: Per guild, per voice channel: who is audible there and since when; see
+        #: ``VoiceSession`` and ``_settle_voice_channel``.
+        self._voice_sessions: dict[int, dict[int, VoiceSession]] = {}
+        #: Per (guild, person): shared voice seconds accrued but not yet worth a
+        #: whole credit, carried forward so several short calls add up the same
+        #: as one long one (see ``structure.voice_credits``).
+        self._voice_seconds: dict[tuple[int, int], float] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
@@ -349,6 +429,7 @@ class EpiphyteClient(discord.Client):
         self._daily_activity = self._storage.load_all_daily_activity()
         self._reactor_presence = self._storage.load_all_reactor_presence()
         self._thread_activity = self._storage.load_all_thread_activity()
+        self._voice_presence = self._storage.load_all_voice_presence()
 
         guild_id = os.getenv(GUILD_ENV)
         if guild_id:
@@ -706,6 +787,144 @@ class EpiphyteClient(discord.Client):
         )
         return structure.thread_depth(qualifying)
 
+    # --- voice channels: the room nobody scrolling ever sees --------------------
+
+    async def _water_voice_presence(self, guild_id: int, user_id: int, now: float) -> None:
+        """Add one earned voice credit's anti-farmed amount to a person's presence weight.
+
+        Mirrors :meth:`_water_reactor_presence` exactly, over its own window and
+        its own table. The credit that gets us here already required company —
+        :func:`structure.shared_voice_seconds` gives a lone occupant nothing —
+        and this then applies the same per-person diminishing returns on top, so
+        an afternoon spent in a call is worth a capped fraction of one person's
+        daily share and real voice presence still costs several distinct real
+        days, exactly as posting does.
+        """
+        window = self._voice_windows.get((guild_id, user_id))
+        start = window.window_start if window is not None else None
+        count = window.count if window is not None else 0
+        amount, new_start, new_count = moisture.next_watering(start, count, now)
+        self._voice_windows[(guild_id, user_id)] = WateringWindow(new_start, new_count)
+
+        guild_voices = self._voice_presence.setdefault(guild_id, {})
+        weight, last_seen = guild_voices.get(user_id, (0.0, now))
+        decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+        updated = moisture.water(decayed, amount)
+        guild_voices[user_id] = (updated, now)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(
+                    self._storage.upsert_voice_presence, guild_id, user_id, updated, now
+                )
+
+    async def _credit_voice_seconds(
+        self, guild_id: int, user_id: int, seconds: float, now: float
+    ) -> None:
+        """Bank shared voice seconds for one person, spending whole credits as they land.
+
+        The sub-credit remainder is carried forward (see
+        :func:`structure.voice_credits`), so an evening of short calls is worth
+        the same as one unbroken one of the same total length.
+        """
+        key = (guild_id, user_id)
+        credits, leftover = structure.voice_credits(self._voice_seconds.get(key, 0.0) + seconds)
+        self._voice_seconds[key] = leftover
+        for _ in range(credits):
+            await self._water_voice_presence(guild_id, user_id, now)
+
+    async def _settle_voice_channel(self, guild_id: int, channel_id: int, now: float) -> None:
+        """Credit everyone audible in one voice channel for the stretch since it last changed.
+
+        The session's ``since`` is always the last moment its audible set changed
+        or was settled, so that stretch had a constant headcount — which is what
+        lets :func:`structure.shared_voice_seconds` judge the whole of it at
+        once, rather than the caller having to integrate over a changing room.
+        Always called *before* a membership change is applied, so the interval is
+        judged by the headcount that actually held during it.
+        """
+        session = self._voice_sessions.get(guild_id, {}).get(channel_id)
+        if session is None:
+            return
+        credited = structure.shared_voice_seconds(len(session.audible), now - session.since)
+        session.since = now
+        if credited <= 0.0:
+            return
+        for user_id in sorted(session.audible):
+            await self._credit_voice_seconds(guild_id, user_id, credited, now)
+
+    async def _settle_open_voice_sessions(self, now: float) -> None:
+        """Settle every guild's open voice sessions, so a long unbroken call still counts.
+
+        Voice state events only fire on *changes*, so a call nobody joins, leaves
+        or mutes in for three hours would otherwise bank nothing until it ended.
+        Running this once per metabolic tick bounds that lag to one heartbeat.
+        """
+        for guild_id, channels in list(self._voice_sessions.items()):
+            for channel_id in list(channels):
+                await self._settle_voice_channel(guild_id, channel_id, now)
+
+    def _voice_activity(self, guild_id: int, now: float) -> float:
+        """Return a guild's current voice-activity reading (a pure read, no writes).
+
+        Deliberately reuses :func:`structure.author_breadth`, for the same reason
+        :meth:`_guild_reaction_warmth` does: "how many distinct people cleared
+        the presence floor, saturating at a modest count" is exactly the
+        anti-clique property this needs, and there is nothing to gain from
+        calibrating a third copy of it. All the voice-specific shaping lives in
+        :func:`structure.root_spread` instead.
+
+        Unlike :meth:`_guild_author_breadth` this neither prunes nor persists
+        anything — the living message and ``/plant`` both read it on demand to
+        render with, not only once per tick, so it must be safe to call at any
+        time. Pruning is :meth:`_prune_voice_presence`'s job, once per tick.
+        """
+        guild_voices = self._voice_presence.get(guild_id, {})
+        weights = [
+            moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            for weight, last_seen in guild_voices.values()
+        ]
+        return structure.author_breadth(weights)
+
+    async def _prune_voice_presence(self, guild_id: int, now: float) -> None:
+        """Drop voice-presence rows whose weight has decayed to nothing.
+
+        The sweep :meth:`_guild_author_breadth` performs inline, kept separate
+        here because the reading itself must stay side-effect free (see
+        :meth:`_voice_activity`). Run once per metabolic tick, so the table stays
+        bounded to people genuinely still around in voice.
+        """
+        guild_voices = self._voice_presence.get(guild_id, {})
+        stale: list[int] = []
+        for user_id, (weight, last_seen) in list(guild_voices.items()):
+            decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            if decayed < AUTHOR_PRESENCE_PRUNE_FLOOR:
+                stale.append(user_id)
+                del guild_voices[user_id]
+        if stale and self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.delete_voice_presence, guild_id, stale)
+
+    async def _clear_voice_presence(self, guild_id: int) -> None:
+        """Wipe a guild's voice presence, and any call in progress, on rebirth.
+
+        Mirrors :meth:`_clear_author_presence` and :meth:`_clear_reactor_presence`:
+        all three record *people currently around a particular plant*, which is
+        this life's own to earn — unlike the daily-activity and thread tables,
+        which record events a community produces and therefore outlive it. Roots
+        make the distinction the most literal of the three: a successor cannot
+        inherit its predecessor's root system, and as a single sprout it has no
+        trunk to flare in any case.
+        """
+        self._voice_presence.pop(guild_id, None)
+        self._voice_sessions.pop(guild_id, None)
+        for key in [key for key in self._voice_seconds if key[0] == guild_id]:
+            del self._voice_seconds[key]
+        for key in [key for key in self._voice_windows if key[0] == guild_id]:
+            del self._voice_windows[key]
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.clear_voice_presence, guild_id)
+
     async def _clear_author_presence(self, guild_id: int) -> None:
         """Wipe a guild's recorded voices when its successor germinates.
 
@@ -736,14 +955,28 @@ class EpiphyteClient(discord.Client):
         memory for the bot's entire uptime — tracking everyone who ever has,
         instead of just who currently does. Run once per metabolic tick, since it
         already sweeps on a steady real-time interval.
+
+        Purely a memory sweep, never a behaviour change: an elapsed window is one
+        :func:`moisture.next_watering` would reset on its next use anyway, so
+        dropping it here cannot hand anybody back a fresh full-strength watering
+        they had not already earned by waiting. The voice windows are swept
+        alongside the message ones for the same reason, together with any
+        sub-credit voice fragment left over from a call that ended long ago.
         """
-        expired = [
+        for windows in (self._windows, self._voice_windows):
+            expired = [
+                key
+                for key, window in windows.items()
+                if now - window.window_start >= moisture.WATERING_WINDOW_SECONDS
+            ]
+            for key in expired:
+                del windows[key]
+        for key in [
             key
-            for key, window in self._windows.items()
-            if now - window.window_start >= moisture.WATERING_WINDOW_SECONDS
-        ]
-        for key in expired:
-            del self._windows[key]
+            for key, seconds in self._voice_seconds.items()
+            if seconds <= 0.0 and key not in self._voice_windows
+        ]:
+            del self._voice_seconds[key]
 
     async def _reclaim_after_reseed(self) -> None:
         """Run VACUUM after a generational reseed, off the event loop.
@@ -789,6 +1022,7 @@ class EpiphyteClient(discord.Client):
                 )
                 await self._clear_author_presence(guild_id)
                 await self._clear_reactor_presence(guild_id)
+                await self._clear_voice_presence(guild_id)
                 await self._reclaim_after_reseed()
             else:
                 await self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
@@ -799,6 +1033,11 @@ class EpiphyteClient(discord.Client):
         rhythm = await self._guild_rhythm(guild_id, now)
         reaction_warmth = await self._guild_reaction_warmth(guild_id, now)
         thread_depth = await self._guild_thread_depth(guild_id, now)
+        # Voice activity is deliberately absent from this call: it drives the
+        # root system in render.py and nothing in the growth model, which is what
+        # makes it independent of the four values above by construction. Its
+        # table is still swept here, where every other per-tick sweep happens.
+        await self._prune_voice_presence(guild_id, now)
         grown = structure.grow(
             state.structure, genome, current, 1, breadth, rhythm, reaction_warmth, thread_depth
         )
@@ -853,6 +1092,52 @@ class EpiphyteClient(discord.Client):
             thread.guild.id, thread.id, thread.owner_id, time.time(), increment=False
         )
 
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        """Track who is audibly in which voice channel, feeding the root system.
+
+        Voice state updates are a standard, non-privileged gateway event, and
+        ``discord.Intents.default()`` already enables ``voice_states`` — like
+        every phase before it, this one adds no intent (see the class docstring).
+        The event carries its own member payload, so none of this needs the
+        privileged member cache either.
+
+        This fires for joins, leaves, moves *and* mute/deafen toggles, which is
+        exactly the set of changes that can make someone stop or start counting
+        (see :func:`structure.voice_is_audible`). Both the channel someone left
+        and the one they arrived in are settled *before* the change is applied,
+        so each stretch of time is credited at the headcount that actually held
+        during it. Someone who mutes themselves without moving therefore leaves
+        the session exactly as if they had disconnected, and rejoins it when they
+        unmute — it is the remaining audible headcount, not the number of people
+        connected, that decides whether the next stretch counts at all.
+        """
+        if member.bot:
+            return
+        state = self.state(member.guild.id)
+        if state is None or state.channel_id is None:
+            return
+
+        afk_channel_id = member.guild.afk_channel.id if member.guild.afk_channel else None
+        was = _audible_channel_id(before, afk_channel_id)
+        now_in = _audible_channel_id(after, afk_channel_id)
+        if was == now_in:
+            return  # nothing that bears on this signal changed
+
+        now = time.time()
+        channels = self._voice_sessions.setdefault(member.guild.id, {})
+        if was is not None:
+            await self._settle_voice_channel(member.guild.id, was, now)
+            session = channels.get(was)
+            if session is not None:
+                session.audible.discard(member.id)
+                if not session.audible:
+                    del channels[was]
+        if now_in is not None:
+            await self._settle_voice_channel(member.guild.id, now_in, now)
+            channels.setdefault(now_in, VoiceSession(audible=set(), since=now)).audible.add(member.id)
+
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         """Credit a genuine reaction toward the guild's reaction-warmth reading.
 
@@ -890,6 +1175,7 @@ class EpiphyteClient(discord.Client):
         """
         now = time.time()
         self._prune_watering_windows(now)
+        await self._settle_open_voice_sessions(now)
         for guild_id, state in list(self._states.items()):
             if state.channel_id is None:
                 continue
@@ -933,14 +1219,20 @@ class EpiphyteClient(discord.Client):
                 return None
         return channel if isinstance(channel, discord.TextChannel) else None
 
-    async def _render_bytes(self, plant: structure.Structure, moisture_value: float) -> bytes:
+    async def _render_bytes(
+        self, plant: structure.Structure, moisture_value: float, voice_activity: float = 0.0
+    ) -> bytes:
         """Render a structure to PNG bytes off the event loop (Pillow is sync).
 
-        ``moisture_value`` is the vitality that modulates the plant's look; the
-        genome is recomputed from the seed so the render matches this individual.
+        ``moisture_value`` is the vitality that modulates the plant's look and
+        ``voice_activity`` the guild's current voice reading, which modulates its
+        root system the same way; the genome is recomputed from the seed so the
+        render matches this individual.
         """
         genome = structure.genome_from_seed(plant.seed)
-        buffer = await asyncio.to_thread(render.render, plant, moisture_value, genome)
+        buffer = await asyncio.to_thread(
+            render.render, plant, moisture_value, genome, voice_activity
+        )
         return buffer.getvalue()
 
     def _embed_for(self, state: storage.GuildState) -> discord.Embed:
@@ -1021,7 +1313,9 @@ class EpiphyteClient(discord.Client):
             if channel is None:
                 await self._mark_channel_unreachable(state)
                 return  # channel unreachable right now; the next tick will retry
-            png = await self._render_bytes(state.structure, state.moisture)
+            png = await self._render_bytes(
+                state.structure, state.moisture, self._voice_activity(guild_id, time.time())
+            )
             embed = self._embed_for(state)
 
             if state.message_id is not None:
@@ -1074,7 +1368,9 @@ class EpiphyteClient(discord.Client):
                 return
             if state.message_id is not None:
                 await self._delete_message(channel, state.message_id)
-            png = await self._render_bytes(state.structure, state.moisture)
+            png = await self._render_bytes(
+                state.structure, state.moisture, self._voice_activity(guild_id, time.time())
+            )
             try:
                 message = await channel.send(
                     embed=self._embed_for(state),
@@ -1188,7 +1484,13 @@ async def plant(interaction: discord.Interaction) -> None:
     now = time.time()
     display_moisture = moisture.decay(state.moisture, now - state.last_update)
     genome = structure.genome_from_seed(state.structure.seed)
-    buffer = await asyncio.to_thread(render.render, state.structure, display_moisture, genome)
+    buffer = await asyncio.to_thread(
+        render.render,
+        state.structure,
+        display_moisture,
+        genome,
+        client._voice_activity(guild_id, now),
+    )
     embed = build_plant_embed(display_moisture, state.structure)
     content = None
     if state.channel_unreachable_since is not None:

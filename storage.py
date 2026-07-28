@@ -49,6 +49,18 @@ sustained threads is a trait of the community's habits, not any one plant's
 biography, so a successor's crown may nest as deeply from its very first tick
 as its predecessor's did. It is only ever pruned back to threads still within
 :data:`structure.THREAD_RECENCY_SECONDS` of now (see ``prune_thread_activity``).
+
+A sixth table, ``voice_presence``, again mirrors ``author_presence`` exactly —
+weight and last-touched time per ``(guild_id, user_id)`` — but for people who
+have spent genuine shared time in a voice channel rather than posting or
+reacting. It feeds the root system ``render.py`` draws (see
+:func:`structure.root_spread`). It is wiped on the same rebirth as the other two
+presence tables, and deliberately *not* treated like ``daily_activity`` or
+``thread_activity``: those two are counters describing events a community
+produces, while all three presence tables describe *people currently around a
+particular plant*, which is this life's own to earn. Roots make that the most
+literal of the three — a successor cannot inherit its predecessor's root system,
+and having germinated as a single sprout it has no trunk to flare in any case.
 """
 
 from __future__ import annotations
@@ -185,6 +197,17 @@ class Storage:
                 first_seen    REAL    NOT NULL,
                 last_seen     REAL    NOT NULL,
                 PRIMARY KEY (guild_id, thread_id, author_id)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_presence (
+                guild_id   INTEGER NOT NULL,
+                user_id    INTEGER NOT NULL,
+                weight     REAL    NOT NULL,
+                last_seen  REAL    NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
             )
             """
         )
@@ -400,6 +423,73 @@ class Storage:
         successor germinates — see the module docstring.
         """
         self._connection.execute("DELETE FROM reactor_presence WHERE guild_id = ?", (guild_id,))
+        self._connection.commit()
+
+    def load_all_voice_presence(self) -> dict[int, dict[int, tuple[float, float]]]:
+        """Load every guild's recorded voice-presence weights, keyed by guild then user.
+
+        Mirrors :meth:`load_all_author_presence` exactly, over people who have
+        held genuine shared voice time instead of message authors — see the
+        module docstring.
+        """
+        rows = self._connection.execute(
+            "SELECT guild_id, user_id, weight, last_seen FROM voice_presence"
+        ).fetchall()
+        result: dict[int, dict[int, tuple[float, float]]] = {}
+        for row in rows:
+            result.setdefault(row["guild_id"], {})[row["user_id"]] = (
+                row["weight"],
+                row["last_seen"],
+            )
+        return result
+
+    def upsert_voice_presence(
+        self, guild_id: int, user_id: int, weight: float, last_seen: float
+    ) -> None:
+        """Insert or update one person's voice-presence weight and commit immediately.
+
+        Called once per earned voice credit (see
+        :data:`structure.VOICE_CREDIT_SECONDS`), which is a far rarer event than
+        a message — this table's hot path is quiet by construction.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO voice_presence (guild_id, user_id, weight, last_seen)
+            VALUES (:guild_id, :user_id, :weight, :last_seen)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                weight    = excluded.weight,
+                last_seen = excluded.last_seen
+            """,
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "weight": weight,
+                "last_seen": last_seen,
+            },
+        )
+        self._connection.commit()
+
+    def delete_voice_presence(self, guild_id: int, user_ids: list[int]) -> None:
+        """Delete specific people's voice-presence rows — their weight has decayed away.
+
+        Mirrors :meth:`delete_author_presence`, run once per metabolic tick.
+        """
+        if not user_ids:
+            return
+        self._connection.executemany(
+            "DELETE FROM voice_presence WHERE guild_id = ? AND user_id = ?",
+            [(guild_id, user_id) for user_id in user_ids],
+        )
+        self._connection.commit()
+
+    def clear_voice_presence(self, guild_id: int) -> None:
+        """Delete every voice-presence row for a guild — a fresh generation is unrooted.
+
+        Called alongside :meth:`clear_author_presence` and
+        :meth:`clear_reactor_presence` when a dead plant's successor germinates —
+        see the module docstring.
+        """
+        self._connection.execute("DELETE FROM voice_presence WHERE guild_id = ?", (guild_id,))
         self._connection.commit()
 
     def load_all_daily_activity(self) -> dict[int, dict[int, int]]:

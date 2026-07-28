@@ -29,6 +29,17 @@ Stem thickness follows the pipe model: a node's width is derived from how many
 tips (terminal endpoints) its subtree carries, so the trunk that feeds the whole
 crown is thick and the fine twigs are thin. Colour runs along height, from rooted
 brown at the base to living teal at the top.
+
+Below the earth line sits the one thing on this plant that is not a reading of
+the channel's writing at all: its root system (Phase 17). How much of it shows is
+``structure.root_spread`` of the guild's voice activity, passed in beside
+``moisture``; like moisture it modulates the look over a fixed body and is never
+part of that body. It is deliberately the quietest treatment in this module —
+roots the colour of the shadow behind the plant, fanning a little way into the
+soil, plus a thickening at the very foot of the trunk — and it is strictly
+additive: at a spread of ``0.0``, which is what a server that never uses voice
+always gets, every drawing call below behaves exactly as it did before this
+existed.
 """
 
 from __future__ import annotations
@@ -47,6 +58,7 @@ from structure import (
     epiphyte_genome,
     has_seeded,
     is_blooming,
+    root_spread,
 )
 
 # Nord palette (RGB), matching the table in CLAUDE.md.
@@ -113,6 +125,39 @@ _SEEDS_PER_HEAD = 3
 #: Thickest stem of an epiphyte: it is a passenger, never a second trunk.
 _EPIPHYTE_MAX_STEM = 3.0 * SUPERSAMPLE
 
+#: Colour of the root system: the same dark the plant is silhouetted against, so
+#: roots read as displaced soil — a shadow under the earth line rather than a
+#: drawn object competing with the body. Kept on-palette on purpose (it is
+#: literally :data:`BACKGROUND`), and kept low-contrast against :data:`EARTH` on
+#: purpose too: this dimension is meant to reward looking at the picture, not to
+#: announce itself from across the channel.
+ROOT_SHADOW = BACKGROUND
+#: How many roots fan out from the trunk's foot at full spread.
+_ROOT_COUNT = 6
+#: Longest a root reaches into the earth band at full spread (supersampled px),
+#: comfortably inside :data:`_EARTH_HEIGHT` so no root ever leaves the soil.
+_ROOT_MAX_LENGTH = 46.0 * SUPERSAMPLE
+#: How far a root may lean away from straight down, in degrees. Kept under the
+#: 60° mark on purpose: a root that leans further than that reads as a spike
+#: lying on the soil rather than as something going down into it.
+_ROOT_MAX_SPLAY = 54.0
+#: Widest a root is where it leaves the trunk, as a fraction of the trunk's own
+#: width there — roots are always thinner than what they feed.
+_ROOT_WIDTH_FRACTION = 0.45
+#: Extra width (supersampled px) added at the very foot of the trunk at full
+#: spread — the basal flare. Added on top of the pipe model's own width, never
+#: replacing it, so the body's own proportions are untouched.
+_ROOT_MAX_FLARE = 6.0 * SUPERSAMPLE
+#: How far up the plant the basal flare reaches, as a fraction of its height.
+#: A hard cutoff rather than an asymptotic fade, and deliberately so: stem widths
+#: are rounded to whole pixels, so an asymptotic tail leaves an epsilon that can
+#: still tip a rounding boundary on some twig high in the crown. Cutting it off
+#: makes "voice activity never touches the crown" exact rather than approximate.
+_ROOT_FLARE_REACH = 0.33
+#: How fast the flare falls off across that reach. Cubic, so it is a buttress at
+#: the very foot of the trunk rather than a uniform thickening of its lower third.
+_ROOT_FLARE_FALLOFF = 3.0
+
 Color = tuple[int, int, int]
 #: One drawable stem: start and end in pixels, its colour and its width.
 Segment = tuple[tuple[float, float], tuple[float, float], Color, float]
@@ -130,14 +175,22 @@ def _parch(color: Color, vitality: float) -> Color:
     return _lerp_color(color, PARCHED, dryness * PARCH_STRENGTH)
 
 
-def render(structure: Structure, moisture: float, genome: Genome) -> io.BytesIO:
+def render(
+    structure: Structure, moisture: float, genome: Genome, voice_activity: float = 0.0
+) -> io.BytesIO:
     """Render a plant to a PNG and return it as a ``BytesIO``.
 
     ``moisture`` is the plant's current vitality (0..1) and ``genome`` its
     heritable look; together they modulate foliage, colour and posture over the
-    fixed body. Draws the Nord background and earth band, then the plant, centred
-    and scaled to fit. A just-germinated plant (a single node) is drawn as a
-    sprout. The returned buffer is rewound to the start.
+    fixed body. ``voice_activity`` (0..1) is the guild's current voice-channel
+    reading and modulates the root system the same way — see
+    :func:`structure.root_spread`, which turns it into how much of that root
+    system shows. It defaults to ``0.0``, no root system at all, so a caller
+    that does not pass it gets exactly the image this function always produced.
+    Draws the Nord background and earth band, then the plant, centred and scaled
+    to fit. A just-germinated plant (a single node) is drawn as a sprout — a
+    sprout has no trunk to flare and no roots worth the name yet, so voice
+    activity does not reach it. The returned buffer is rewound to the start.
     """
     vitality = max(0.0, min(1.0, moisture))
     image = Image.new("RGB", (_W, _H), BACKGROUND)
@@ -147,7 +200,7 @@ def render(structure: Structure, moisture: float, genome: Genome) -> io.BytesIO:
     draw.rectangle((0, earth_top, _W, _H), fill=EARTH)
 
     if len(structure.nodes) > 1:
-        _draw_structure(draw, structure, genome, vitality, earth_top)
+        _draw_structure(draw, structure, genome, vitality, earth_top, root_spread(voice_activity))
     else:
         _draw_sprout(draw, vitality, genome, earth_top)
 
@@ -344,6 +397,7 @@ def _stem_segments(
     heights: dict[int, float],
     vitality: float,
     max_width: float,
+    base_flare: float = 0.0,
 ) -> list[Segment]:
     """Build a structure's stems as drawable segments, thickest (trunk) first.
 
@@ -351,6 +405,14 @@ def _stem_segments(
     whole — scaled into this structure's own range, so an epiphyte's trunk stays a
     twig. Dead wood is a constant weathered grey; living wood takes the height
     gradient, parched toward brown as vitality falls.
+
+    ``base_flare`` is the extra width voice activity buttresses the foot of the
+    trunk with (see :data:`_ROOT_MAX_FLARE`). It is *added* to the pipe model's
+    own width rather than folded into ``max_width``, so it cannot change the
+    body's own proportions; it is scaled by the segment's pipe fraction, so it
+    reaches only thick wood; and it stops dead at :data:`_ROOT_FLARE_REACH`, so
+    every width above the plant's lower third is bit-identical whatever the
+    flare. At its default ``0.0`` every width here is bit-identical, full stop.
     """
     nodes = structure.nodes
     tip_counts = _subtree_tip_counts(structure)
@@ -363,15 +425,62 @@ def _stem_segments(
 
     segments: list[Segment] = []
     for node, parent in branches:
+        middle = (heights[node.id] + heights[parent.id]) / 2.0
         if node.state is NodeState.DEAD:
             color = DEAD_WOOD
         else:
-            middle = (heights[node.id] + heights[parent.id]) / 2.0
             color = _parch(_lerp_color(STEM_BOTTOM, STEM_TOP, middle), vitality)
         frac = (tip_counts[node.id] ** 0.5) / (max_tips ** 0.5)
-        width = max(_MIN_STEM, _MIN_STEM + (max_width - _MIN_STEM) * frac)
+        flare = 0.0
+        if middle < _ROOT_FLARE_REACH:
+            fade = 1.0 - middle / _ROOT_FLARE_REACH
+            flare = base_flare * frac * fade ** _ROOT_FLARE_FALLOFF
+        width = max(_MIN_STEM, _MIN_STEM + (max_width - _MIN_STEM) * frac + flare)
         segments.append((pixels[parent.id], pixels[node.id], color, width))
     return segments
+
+
+def _draw_roots(
+    draw: ImageDraw.ImageDraw,
+    base_px: tuple[float, float],
+    trunk_width: float,
+    spread: float,
+    seed: int,
+) -> None:
+    """Draw the root system fanning from the trunk's foot into the earth band.
+
+    ``spread`` is :func:`structure.root_spread` of the guild's voice activity and
+    governs both halves of how visible this is: how far the roots reach, and how
+    far their colour has moved from the soil they sit in toward
+    :data:`ROOT_SHADOW`. Both scale straight off it, so the emergence past
+    :data:`structure.VOICE_ROOT_THRESHOLD` is squared once more in perceived
+    terms than the curve alone — a hint at first, legible only near saturation.
+    At ``spread <= 0`` nothing is drawn at all.
+
+    Splay and length are seeded by the plant's own ``seed``, so a given plant
+    always has the same roots and they stay put between renders, exactly like its
+    leaf placement and blossom rotations do.
+    """
+    if spread <= 0.0:
+        return
+    rng = random.Random(f"root:{seed}")
+    color = _lerp_color(EARTH, ROOT_SHADOW, spread)
+    base_x, base_y = base_px
+    for index in range(_ROOT_COUNT):
+        # Fan the roots evenly across the splay, then jitter each a little, so a
+        # plant's roots are as uneven as everything else it has grown.
+        even = -1.0 + 2.0 * index / (_ROOT_COUNT - 1)
+        angle = math.radians(90.0 + even * _ROOT_MAX_SPLAY * rng.uniform(0.75, 1.0))
+        length = _ROOT_MAX_LENGTH * spread * rng.uniform(0.6, 1.0)
+        width = max(1.0, trunk_width * _ROOT_WIDTH_FRACTION * rng.uniform(0.5, 1.0))
+        # Two tapering runs rather than one straight line: the root leaves the
+        # trunk thick and short of its full reach, then thins to a point.
+        mid_x = base_x + length * 0.55 * math.cos(angle)
+        mid_y = base_y + length * 0.55 * math.sin(angle)
+        end_x = base_x + length * math.cos(angle) + length * 0.2 * rng.uniform(-1.0, 1.0)
+        end_y = base_y + length * math.sin(angle)
+        draw.line((base_x, base_y, mid_x, mid_y), fill=color, width=max(1, round(width)))
+        draw.line((mid_x, mid_y, end_x, end_y), fill=color, width=max(1, round(width * 0.5)))
 
 
 def _draw_segments(draw: ImageDraw.ImageDraw, segments: list[Segment]) -> None:
@@ -417,12 +526,19 @@ def _draw_structure(
     genome: Genome,
     vitality: float,
     earth_top: int,
+    spread: float = 0.0,
 ) -> None:
     """Draw the whole plant: body and foliage, plus whatever it has earned.
 
     A plant in bloom carries blossoms in its own colour, one that has set seed
     carries seed heads, and a tree old enough to have taken on an epiphyte carries
     that little second plant on the limb it settled on.
+
+    ``spread`` (see :func:`structure.root_spread`) buttresses the foot of the
+    trunk and, below it, draws the roots — before the stems, so the trunk always
+    sits over its own roots. The epiphyte is deliberately left out of both: it
+    grows on a branch and never touches the soil, which is exactly what makes it
+    an epiphyte.
     """
     epiphyte_world = _epiphyte_world_points(structure)
     points = [(node.x, node.y) for node in structure.nodes] + list(epiphyte_world.values())
@@ -430,7 +546,9 @@ def _draw_structure(
 
     pixels = {node.id: to_px(node.x, node.y) for node in structure.nodes}
     heights = {node.id: height_fraction(node.y) for node in structure.nodes}
-    segments = _stem_segments(structure, pixels, heights, vitality, _MAX_STEM)
+    segments = _stem_segments(structure, pixels, heights, vitality, _MAX_STEM, spread * _ROOT_MAX_FLARE)
+    if spread > 0.0 and segments:
+        _draw_roots(draw, pixels[0], segments[0][3], spread, structure.seed)
 
     epiphyte_pixels = {node_id: to_px(x, y) for node_id, (x, y) in epiphyte_world.items()}
     if structure.epiphyte is not None:

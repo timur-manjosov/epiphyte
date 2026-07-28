@@ -351,6 +351,68 @@ angelegt.
   Rhythmus ist Threads-Tiefe ein stiller Form-Modifikator ohne eigenen
   Zustand, den die Pflanze trägt oder ansagt — kein neuer Meilenstein wie
   Blüte, also auch kein neuer Text-Pool und kein neues Embed-Feld.
+- **Phase 17 — Sprachaktivität (Wurzelwerk / Stammfuß) ✓:** fünfte
+  Vitalitätsdimension, und die einzige, die `grow()` **überhaupt nicht**
+  erreicht. Text, Reaktionen und Threads sind alle im Kanal sichtbar;
+  gemeinsam verbrachte Zeit im Sprachkanal ist die parallele, ungesehene
+  Hälfte des Serverlebens — also treibt sie das Wurzelwerk und die
+  Verdickung des Stammfußes in `render.py` an (`structure.root_spread`,
+  gereicht wie `moisture` als Erscheinungs-Modulation über einen
+  unveränderten Körper), nichts am Verzweigungsmodell. Genau daraus folgt
+  die Unabhängigkeit von Autorenbreite, Rhythmus und Threads-Tiefe
+  **konstruktiv statt kalibriert**: die drei teilen sich `grow()`s
+  Zweig- und Winkelterme und mussten gegeneinander in Vier-Ecken-Tests
+  freigeprüft werden — Sprachaktivität hat mit keiner von ihnen einen Term
+  gemeinsam, durch den sie überhaupt interferieren könnte.
+  `structure.voice_is_audible` und `structure.shared_voice_seconds`
+  definieren, was als echte Sprachaktivität zählt: Zeit läuft **nur**,
+  solange mindestens `VOICE_MIN_AUDIBLE` (zwei) Personen gleichzeitig
+  *hörbar* im selben Kanal sind — stumm, taub oder im AFK-Kanal der Guild
+  zählt exakt wie „gar nicht verbunden", nicht als Abschlag. Damit ist die
+  Anti-Farming-Eigenschaft hier schärfer als bei allen Textsignalen: dort
+  ist sie eine *Deckelung* des Beitrags einer Person, hier ist
+  Gleichzeitigkeit gefordert, die ein einzelnes Konto gar nicht herstellen
+  kann — wer allein acht Stunden täglich im Kanal sitzt, erzeugt niemals
+  auch nur ein Gramm Präsenzgewicht. Je `VOICE_CREDIT_SECONDS` (15 min)
+  geteilter Zeit entsteht ein Credit, der durch dieselbe
+  Person-Fenster-Falloff-Kurve wie das Gießen läuft
+  (`moisture.next_watering`); der Rest wird übertragen
+  (`structure.voice_credits`), damit ein Abend aus mehreren kurzen
+  Gesprächen genauso viel wert ist wie ein einzelnes langes. Die
+  Präsenzgewichte liegen in `storage.py`s neuer `voice_presence`-Tabelle,
+  gefüttert über `bot.py`s `on_voice_state_update` — ein
+  Standard-Gateway-Event: `discord.Intents.default()` **enthält
+  `voice_states` bereits** (privilegiert sind nur `members`, `presences`,
+  `message_content`, alle drei bleiben aus), diese Phase fordert also wie
+  jede vorige keinen neuen Intent und stößt an keine Verifizierungsgrenze.
+  Gelesen wird die Breite über `structure.author_breadth` — bewusst
+  wiederverwendet statt einer dritten Kalibrierungsachse, exakt wie bei
+  Phase 15; die gesamte spezifische Kalibrierung sitzt stattdessen in
+  `root_spread`. Dessen Kurve *ist* der Entwurf dieser Phase: unterhalb von
+  `VOICE_ROOT_THRESHOLD` (0.5, also unter drei getragenen Stimmen) exakt
+  `0.0` — nicht wenig, keins; darüber mit `VOICE_ROOT_EXPONENT` (2)
+  potenziert, sodass vier Stimmen etwa ein Zehntel, fünf etwa vier Zehntel
+  und erst sechs die volle Wirkung ergeben. Gemessen: bei voller Sättigung
+  bewegen sich **0,9 % der Bildfläche**, sämtlich unterhalb von 71 % der
+  Bildhöhe (Vergleichsmaßstab: ein Feuchtigkeitswechsel bewegt 10,8 %); ein
+  Duo, das täglich telefoniert, bewegt exakt **null Bytes**. Weil jedes
+  Wurzel-Visual rein additiv auf `0.0` aufsetzt, ist „kein Voice" nicht auf
+  das Vor-Phase-17-Bild *kalibriert*, sondern byteidentisch damit — dieselbe
+  erzwungene Art von Nulleffekt, die `_depth_exponent` unterhalb seines
+  Neutralpunkts liefert. Bei Tod/Wiedergeburt wird `voice_presence`
+  **geleert**, zusammen mit `author_presence` und `reactor_presence` und
+  anders als `daily_activity`/`thread_activity`: die drei Präsenztabellen
+  beschreiben *Menschen um eine bestimmte Pflanze herum*, die beiden
+  Zähler-Tabellen dagegen Ereignisse, die eine Community produziert. Bei
+  Wurzeln ist das die wörtlichste Fassung dieser Unterscheidung — ein
+  Nachfolger kann das Wurzelwerk seines Vorgängers nicht erben, und als
+  einzelner Keimling hat er ohnehin keinen Stamm zum Verbreitern.
+  `voice.py` und `presentation.py` bleiben unverändert — und das ist hier
+  keine Sparsamkeit, sondern der Entwurf: eine Dimension, die absichtlich
+  verborgen bleibt und den belohnen soll, der genau hinsieht, darf sich
+  nicht selbst ansagen. Eine Textzeile dafür wäre außerdem entweder ein
+  fünftes diskretes Band, das den ansonsten stabilen Text mitwandern ließe
+  (siehe „Tick-Stabilität"), oder eine Zahl — beides verboten.
 
 **Offen:**
 
@@ -359,7 +421,7 @@ angelegt.
   keine Zeit- oder Jahreszeit-Tönung.
 - **Weitere, noch unbenannte Phasen:** zusätzliche Vitalitätssignale (siehe
   „Zulassungstest für ein neues Vitalitätssignal" oben) und die botanischen
-  Dimensionen, die sie antreiben — z. B. Sprachaktivität, Kanalbreite.
+  Dimensionen, die sie antreiben — z. B. Kanalbreite.
 
 **Es gibt keinen definierten letzten Schritt.** Der Phasenplan bleibt bewusst
 offen; weitere Stufen dürfen entstehen, solange sie der Emergenz-These treu
@@ -377,18 +439,21 @@ epiphyte/
 │                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte,
 │                        #   Autorenbreite (author_breadth), zeitlicher Rhythmus
 │                        #   (temporal_rhythm), Blütenintensität (_bloom_intensity),
-│                        #   Threads-Verzweigungstiefe (thread_qualifies, thread_depth)
-│                        #                                [Phase 5–9, 11, 12, 15, 16]
+│                        #   Threads-Verzweigungstiefe (thread_qualifies, thread_depth),
+│                        #   Sprachaktivität (voice_is_audible, shared_voice_seconds,
+│                        #   voice_credits, root_spread — treibt nur render.py, nie grow())
+│                        #                            [Phase 5–9, 11, 12, 15, 16, 17]
 ├── voice.py             # REINE LOGIK: die Stimme der Pflanze — VoiceState, Text-Pools,
 │                        #   deterministische Auswahl (siehe Persona-Bibel)  [Phase 13, 15]
 ├── presentation.py      # REINE LOGIK: der Rahmen um die Pflanze — LifeEvent, Akzentfarbe,
 │                        #   Feldstruktur, Bildplatzierung, Footer (siehe „Präsentation");
 │                        #   liefert ein Panel, kein Embed                  [Phase 14, 15]
-├── render.py            # Struktur → PNG via Pillow (gekapselte I/O)          [Phase 2, erweitert 5–9, 15]
+├── render.py            # Struktur → PNG via Pillow (gekapselte I/O); Wurzelwerk und
+│                        #   Stammfuß-Verbreiterung aus root_spread   [Phase 2, erweitert 5–9, 15, 17]
 ├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
 │                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity,
-│                        #   reactor_presence, thread_activity
-│                        #                            [Phase 3, erweitert 5–9, 11, 12, 15, 16]
+│                        #   reactor_presence, thread_activity, voice_presence
+│                        #                        [Phase 3, erweitert 5–9, 11, 12, 15, 16, 17]
 ├── tests/               # pytest, ausschließlich für die reine Logik                    [ab Phase 1]
 ├── requirements.txt
 ├── requirements-dev.txt # pytest, reine Dev-Abhängigkeit, getrennt von der Laufzeit      [Phase 1]
@@ -425,7 +490,7 @@ Damit die Lücke zwischen These und Implementierung nicht in Prosa untergeht:
 | Zeitlicher Rhythmus (Gleichmäßigkeit der Tagesaktivität) → Wuchsform/Symmetrie | **live** (`structure.temporal_rhythm`, `grow()`, Phase 12) |
 | Reaktionen (Breite der reagierenden Stimmen) → Blütenintensität | **live** (`structure._bloom_intensity`, `grow()`, Phase 15) |
 | Threads (qualifizierte, andauernde Nebengespräche) → Verzweigungstiefe | **live** (`structure.thread_depth`, `grow()`, Phase 16) |
-| Sprachaktivität (Voice) → eigene Dimension | entworfen, noch nicht gebaut |
+| Sprachaktivität (geteilte, hörbare Zeit im Sprachkanal) → Wurzelwerk / Stammfuß | **live** (`structure.root_spread`, `render.py`, Phase 17) |
 | Kanalbreite (wie viele verschiedene Kanäle aktiv sind) → eigene Dimension | entworfen, noch nicht gebaut |
 
 Jedes „entworfen, noch nicht gebaut"-Signal muss vor der Implementierung den
@@ -457,7 +522,13 @@ echte Zeit, für eine Einzelperson nicht farmbar).
 - Tests mit pytest **nur für die reine Logik**, nicht für die
   Discord-Integration. pytest ist eine Dev-Abhängigkeit, getrennt von den
   Laufzeit-Requirements; kommt dazu, sobald die erste reine Logik existiert
-  (Phase 1).
+  (Phase 1). Eng begrenzte Ausnahme seit Phase 17: wo eine Zusage *über das
+  gezeichnete Bild* geprüft werden muss und in reiner Logik gar nicht
+  formulierbar ist — „ohne Signal byteidentisch mit vorher", „bewegt unter
+  x % der Bildfläche" —, darf ein Test `render` importieren. Das verletzt den
+  Zweck der Regel nicht (Testbarkeit ohne discord.py); Pillow ist kein
+  Gateway. Solche Tests gehören in einen eigenen, als solchen beschrifteten
+  Abschnitt am Ende der Datei, nie verstreut zwischen die reinen.
 - Bestehenden, nicht betroffenen Code nicht umformatieren oder umschreiben.
 
 ## Performance-Prinzipien
