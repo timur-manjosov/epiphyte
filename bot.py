@@ -23,10 +23,19 @@ brings the living message back into view if it has scrolled away.
 Growth is gated by moisture, and moisture is subject to the per-person
 diminishing returns from Phase 3, so spam cannot farm a big tree.
 
+Everything the plant says about itself, it says in the first person: the living
+message's heading and text are spoken by ``voice``, which reads them from the
+body and the moisture. Where those words land — the accent colour, which
+instruments stand beside them, whether the picture leads or accompanies them —
+is decided by ``presentation``, from the same state. Operational replies —
+permissions, an unreachable channel, the setup notice, ``/help`` — deliberately
+stay plain and hold one fixed colour, so nobody has to read poetry to find out
+what broke. See "Die Stimme der Pflanze" and "Präsentation" in ``CLAUDE.md``.
+
 This module is the thin Discord adapter: client, commands, events, the scheduler
 wiring and the living-message I/O. The interesting computation lives in the pure
-``moisture`` and ``structure`` modules; ``render`` isolates the Pillow drawing and
-``storage`` the SQLite persistence.
+``moisture``, ``structure``, ``voice`` and ``presentation`` modules; ``render``
+isolates the Pillow drawing and ``storage`` the SQLite persistence.
 """
 
 from __future__ import annotations
@@ -37,7 +46,6 @@ import logging
 import os
 import random
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import discord
@@ -46,10 +54,11 @@ from discord import app_commands
 from discord.ext import tasks
 
 import moisture
+import presentation
 import render
 import storage
 import structure
-from moisture import Stage
+import voice
 
 _log = logging.getLogger("epiphyte")
 
@@ -70,30 +79,24 @@ TICK_INTERVAL_SECONDS = 60 * 60  # 1 hour
 #: successor germinates in its place — a short, visible dead phase.
 DEAD_PHASE_TICKS = 3
 
-#: Nord-themed embed colour per growth stage (driest to lushest).
-STAGE_COLORS: dict[Stage, int] = {
-    Stage.WITHERED: 0x5E4A3B,  # rooted stem brown
-    Stage.DRY: 0x8FBCBB,       # pale living stem
-    Stage.HEALTHY: 0xA3BE8C,   # leaf green
-    Stage.THRIVING: 0x88C0D0,  # bud accent
-}
+#: Presence weight below which an author's recorded row is dropped as negligible.
+#: Checked once per metabolic tick alongside the breadth calculation, so the
+#: author_presence table (and its in-memory mirror) stays bounded to genuinely
+#: still-relevant recent voices rather than growing with every person who has
+#: ever posted once, long after their presence has decayed away.
+AUTHOR_PRESENCE_PRUNE_FLOOR = 0.01
 
-#: Nord dark grey for the embed of a dead plant.
-DEAD_EMBED_COLOR = 0x4C566A
-
-#: Human-readable label per growth stage.
-STAGE_LABELS: dict[Stage, str] = {
-    Stage.WITHERED: "Withered",
-    Stage.DRY: "Dry",
-    Stage.HEALTHY: "Healthy",
-    Stage.THRIVING: "Thriving",
-}
+#: Seconds in a whole day — the bucket size structure.day_bucket() groups
+#: messages into for structure.temporal_rhythm().
+DAY_SECONDS = 24 * 60 * 60
 
 #: Attachment filename referenced by the embed's image.
 PLANT_IMAGE_FILENAME = "plant.png"
 
-#: Nord accent used for the /help embed — informational, not a growth stage.
-HELP_EMBED_COLOR = STAGE_COLORS[Stage.THRIVING]
+#: Nord accent used for the /help embeds. Operational surfaces hold one fixed
+#: colour on purpose: unlike the living message, they are not a readout of
+#: anything, and somebody reading them wants an explanation, not a mood.
+HELP_EMBED_COLOR = presentation.PLAIN_ACCENT
 
 #: Project repository, credited once in /help.
 REPO_URL = "https://github.com/timur-manjosov/epiphyte"
@@ -101,16 +104,14 @@ REPO_URL = "https://github.com/timur-manjosov/epiphyte"
 #: How often the bot's presence rotates to its next in-fiction status line.
 PRESENCE_ROTATE_MINUTES = 10
 
-#: Rotating status lines the bot "speaks" through its presence. Each pairs an
-#: activity type with either a fixed string or a callable that builds one from
-#: live data already on hand (e.g. the guild count) — no extra lookups needed.
-PRESENCE_ACTIVITIES: tuple[tuple[discord.ActivityType, str | Callable[[EpiphyteClient], str]], ...] = (
-    (discord.ActivityType.playing, "growing quietly"),
-    (discord.ActivityType.watching, "the light"),
-    (discord.ActivityType.playing, "photosynthesizing"),
-    (discord.ActivityType.listening, "for the next message"),
-    (discord.ActivityType.watching, lambda client: f"over {len(client.guilds)} channels"),
-)
+#: Discord's activity type per activity kind named in :data:`voice.PRESENCE_LINES`.
+#: The lines themselves live with the rest of the plant's speech in ``voice``,
+#: which stays free of ``import discord``; this is the one mapping that needs both.
+ACTIVITY_TYPES: dict[str, discord.ActivityType] = {
+    "playing": discord.ActivityType.playing,
+    "watching": discord.ActivityType.watching,
+    "listening": discord.ActivityType.listening,
+}
 
 
 @dataclass
@@ -126,52 +127,25 @@ class WateringWindow:
     count: int
 
 
-def describe_milestones(plant: structure.Structure, moisture_value: float) -> str:
-    """Name the rare states the plant is showing, or an empty string for none."""
-    marks = []
-    if structure.is_blooming(plant, moisture_value):
-        marks.append("🌸 in bloom")
-    if structure.has_seeded(plant):
-        marks.append("🌰 seeded")
-    if plant.epiphyte is not None:
-        marks.append("🌿 epiphyte")
-    return " · ".join(marks)
-
-
-def describe_lineage(plant: structure.Structure) -> str:
-    """Say where the plant stands in its line, and how much of that line flowered."""
-    if plant.lineage_blooms:
-        return f"{plant.generation} · {plant.lineage_blooms} flowered before it"
-    return str(plant.generation)
-
-
 def build_plant_embed(moisture_value: float, plant: structure.Structure) -> discord.Embed:
-    """Build the Nord-themed embed framing the plant image, values and lineage.
+    """Build the embed framing the plant image, its words and its instruments.
 
-    A living plant shows its moisture, stage and age; a fully dead one shows that
-    it has died and a successor is coming. Both show the lineage, so the plant's
-    descent stays visible as it dies and is reborn, and both name whatever rare
-    states the body is carrying — a bloom, the seed it has set, an epiphyte.
+    Every decision worth making here — the accent colour, which instruments are
+    shown, whether the picture leads or accompanies the text, the footer — is made
+    in :mod:`presentation` as a pure function of the plant's state, so it is
+    testable without Discord. This function is only the pour: it turns that
+    :class:`presentation.Panel` into the Discord object it was designed for and
+    knows nothing else.
     """
-    if structure.is_dead(plant):
-        embed = discord.Embed(title="🥀 The plant has died", color=DEAD_EMBED_COLOR)
-        embed.add_field(name="Status", value="A new seed will sprout soon")
-        embed.add_field(name="Lived", value=f"{plant.step_count} steps")
+    panel = presentation.compose(plant, moisture_value, TICK_INTERVAL_SECONDS)
+    embed = discord.Embed(title=panel.title, description=panel.body, color=panel.accent)
+    for field in panel.fields:
+        embed.add_field(name=field.name, value=field.value, inline=field.inline)
+    if panel.image is presentation.ImagePlacement.THUMBNAIL:
+        embed.set_thumbnail(url=f"attachment://{PLANT_IMAGE_FILENAME}")
     else:
-        plant_stage = moisture.stage(moisture_value)
-        blooming = structure.is_blooming(plant, moisture_value)
-        embed = discord.Embed(
-            title="🌸 The plant is in bloom" if blooming else "🌱 The plant",
-            color=STAGE_COLORS[plant_stage],
-        )
-        embed.add_field(name="Moisture", value=f"{moisture_value:.0%}")
-        embed.add_field(name="Stage", value=STAGE_LABELS[plant_stage])
-        embed.add_field(name="Age", value=f"{plant.step_count} steps")
-    embed.add_field(name="Generation", value=describe_lineage(plant))
-    milestones = describe_milestones(plant, moisture_value)
-    if milestones:
-        embed.add_field(name="Milestones", value=milestones, inline=False)
-    embed.set_image(url=f"attachment://{PLANT_IMAGE_FILENAME}")
+        embed.set_image(url=f"attachment://{PLANT_IMAGE_FILENAME}")
+    embed.set_footer(text=panel.footer)
     return embed
 
 
@@ -310,6 +284,15 @@ class EpiphyteClient(discord.Client):
         self._storage: storage.Storage | None = None
         self._states: dict[int, storage.GuildState] = {}
         self._windows: dict[tuple[int, int], WateringWindow] = {}
+        #: Per guild, per author: (presence weight, last_seen). Mirrors
+        #: ``self._states`` so a rapid run of messages from the same author can
+        #: never read stale data between one update and the next; see
+        #: ``_water_author_presence``.
+        self._author_presence: dict[int, dict[int, tuple[float, float]]] = {}
+        #: Per guild, per calendar day bucket: raw message count. Feeds
+        #: ``structure.temporal_rhythm`` via ``_guild_rhythm``; see
+        #: ``_record_daily_activity``.
+        self._daily_activity: dict[int, dict[int, int]] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
@@ -325,6 +308,8 @@ class EpiphyteClient(discord.Client):
         """
         self._storage = storage.Storage()
         self._states = self._storage.load_all()
+        self._author_presence = self._storage.load_all_author_presence()
+        self._daily_activity = self._storage.load_all_daily_activity()
 
         guild_id = os.getenv(GUILD_ENV)
         if guild_id:
@@ -471,6 +456,108 @@ class EpiphyteClient(discord.Client):
         await self._store_watering(
             replace(state, moisture=moisture.water(current, amount), last_update=now)
         )
+        await self._water_author_presence(guild_id, user_id, amount, now)
+        await self._record_daily_activity(guild_id, now)
+
+    async def _water_author_presence(
+        self, guild_id: int, author_id: int, amount: float, now: float
+    ) -> None:
+        """Add this message's anti-farmed watering amount to the author's presence weight.
+
+        Reuses ``amount`` — already discounted by the same per-person diminishing
+        returns as moisture (see :func:`moisture.next_watering`) — so a single
+        account can only build genuine presence by returning across several
+        distinct real days, exactly as it can only meaningfully water the plant
+        that way (see :func:`structure.author_breadth`). The in-memory cache is
+        updated synchronously, mirroring :meth:`_store_watering`, so a second
+        message from the same author an instant later always sees this one's
+        update; only the disk write trails behind.
+        """
+        guild_presence = self._author_presence.setdefault(guild_id, {})
+        weight, last_seen = guild_presence.get(author_id, (0.0, now))
+        decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+        updated = moisture.water(decayed, amount)
+        guild_presence[author_id] = (updated, now)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(
+                    self._storage.upsert_author_presence, guild_id, author_id, updated, now
+                )
+
+    async def _record_daily_activity(self, guild_id: int, now: float) -> None:
+        """Count one message toward its calendar day, feeding temporal rhythm.
+
+        Deliberately counts every message, not a diminishing-returns-discounted
+        amount like :meth:`_water_author_presence` does: rhythm reads *when*
+        activity happens, not who it came from, and its farming resistance comes
+        from a different property — see :func:`structure.temporal_rhythm`'s
+        docstring — so there is no per-person amount to reuse here. The in-memory
+        cache is updated synchronously, mirroring :meth:`_water_author_presence`,
+        so a second message an instant later always sees this one's update.
+        """
+        bucket = structure.day_bucket(now)
+        guild_days = self._daily_activity.setdefault(guild_id, {})
+        guild_days[bucket] = guild_days.get(bucket, 0) + 1
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.increment_daily_activity, guild_id, bucket)
+
+    async def _guild_author_breadth(self, guild_id: int, now: float) -> float:
+        """Decay this guild's recorded voices to ``now``, drop the negligible ones,
+        and return its current author-breadth score (see :func:`structure.author_breadth`).
+
+        Pruning here — once per metabolic tick — is the one place the table (and
+        its in-memory mirror) is swept, so it stays bounded to genuinely
+        still-relevant recent voices.
+        """
+        guild_presence = self._author_presence.get(guild_id, {})
+        stale: list[int] = []
+        weights: list[float] = []
+        for author_id, (weight, last_seen) in list(guild_presence.items()):
+            decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            if decayed < AUTHOR_PRESENCE_PRUNE_FLOOR:
+                stale.append(author_id)
+                del guild_presence[author_id]
+            else:
+                weights.append(decayed)
+        if stale and self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.delete_author_presence, guild_id, stale)
+        return structure.author_breadth(weights)
+
+    async def _guild_rhythm(self, guild_id: int, now: float) -> float:
+        """Prune this guild's daily-activity window to now, and return its rhythm.
+
+        Drops day buckets older than :data:`structure.RHYTHM_WINDOW_DAYS`
+        (mirroring the pruning :meth:`_guild_author_breadth` does for presence,
+        just on a calendar-day cadence rather than a decayed weight), then
+        zero-fills every day in the window that has no recorded messages before
+        handing the list to :func:`structure.temporal_rhythm` — silence is a data
+        point for rhythm, not a gap to skip.
+        """
+        today = structure.day_bucket(now)
+        window_start = today - structure.RHYTHM_WINDOW_DAYS + 1
+        guild_days = self._daily_activity.get(guild_id, {})
+        stale = [bucket for bucket in guild_days if bucket < window_start]
+        for bucket in stale:
+            del guild_days[bucket]
+        if stale and self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.prune_daily_activity, guild_id, window_start)
+        counts = [guild_days.get(bucket, 0) for bucket in range(window_start, today + 1)]
+        return structure.temporal_rhythm(counts)
+
+    async def _clear_author_presence(self, guild_id: int) -> None:
+        """Wipe a guild's recorded voices when its successor germinates.
+
+        Breadth is this life's own accumulated crowd, not the lineage's — like
+        :class:`structure.LifeStats`, a new generation starts unheard and must
+        earn its own again.
+        """
+        self._author_presence.pop(guild_id, None)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.clear_author_presence, guild_id)
 
     def _prune_watering_windows(self, now: float) -> None:
         """Drop watering windows whose window has fully elapsed.
@@ -504,10 +591,15 @@ class EpiphyteClient(discord.Client):
         """Advance one guild's plant by a single life-step (the tick's core).
 
         Decays moisture to ``now``, then either grows the plant one step (gated by
-        that moisture), or — if it is dead — counts down a brief dead phase and
-        germinates a mutated successor when it elapses. All the growth, death and
-        heredity is the pure logic in :mod:`structure`; this only reads the clock,
-        runs the small state machine and stores the result.
+        that moisture and, for its shape, by the guild's current author breadth
+        and temporal rhythm — see :meth:`_guild_author_breadth` and
+        :meth:`_guild_rhythm`), or — if it is dead — counts down a brief dead
+        phase and germinates a mutated successor when it elapses, wiping the
+        recorded voices along with it. The recorded daily activity behind rhythm
+        is deliberately *not* wiped on rebirth — see ``storage.py``'s module
+        docstring. All the growth, death and heredity is the pure logic in
+        :mod:`structure`; this only reads the clock, runs the small state machine
+        and stores the result.
         """
         state = self._states[guild_id]
         current = moisture.decay(state.moisture, now - state.last_update)
@@ -520,13 +612,16 @@ class EpiphyteClient(discord.Client):
                     replace(state, structure=successor, moisture=current,
                             last_update=now, dead_ticks=0)
                 )
+                await self._clear_author_presence(guild_id)
                 await self._reclaim_after_reseed()
             else:
                 await self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
             return
 
         genome = structure.genome_from_seed(state.structure.seed)
-        grown = structure.grow(state.structure, genome, current, 1)
+        breadth = await self._guild_author_breadth(guild_id, now)
+        rhythm = await self._guild_rhythm(guild_id, now)
+        grown = structure.grow(state.structure, genome, current, 1, breadth, rhythm)
         await self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
 
     async def on_message(self, message: discord.Message) -> None:
@@ -577,10 +672,9 @@ class EpiphyteClient(discord.Client):
         Purely cosmetic flavour text — never a stand-in for the plant's real
         state, which only ever shows in the living message and embeds.
         """
-        activity_type, text = PRESENCE_ACTIVITIES[self._presence_index % len(PRESENCE_ACTIVITIES)]
+        kind, name = voice.PRESENCE_LINES[self._presence_index % len(voice.PRESENCE_LINES)]
         self._presence_index += 1
-        name = text(self) if callable(text) else text
-        await self.change_presence(activity=discord.Activity(type=activity_type, name=name))
+        await self.change_presence(activity=discord.Activity(type=ACTIVITY_TYPES[kind], name=name))
 
     async def on_ready(self) -> None:
         """Start the presence rotation once connected.
@@ -932,17 +1026,20 @@ class ConfirmGerminationView(discord.ui.View):
         if not planted:
             await interaction.response.edit_message(
                 content=(
-                    "🌱 This server already has a plant now — another confirmation "
+                    "This server already has a plant now — another confirmation "
                     "must have gone through first. This dialog no longer applies; "
                     "run `/epiphyte-channel` again if you want to move the existing plant."
                 ),
                 view=None,
             )
             return
+        state = client.state(self._guild_id)
+        greeting = voice.germination_greeting(state.structure.seed) if state else ""
         await interaction.response.edit_message(
             content=(
-                f"🌱 The plant now lives in {self._channel.mention}. Activity anywhere "
-                "in this server waters it, and it will grow there on its own over time."
+                f"{greeting}\n\n"
+                f"It lives in {self._channel.mention} from now on. Activity anywhere in "
+                "this server waters it, and it will grow there on its own over time."
             ),
             view=None,
         )

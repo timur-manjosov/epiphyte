@@ -23,6 +23,8 @@ The core discipline is a clean split between **pure logic** and **I/O**.
 |---|---|---|
 | `moisture.py` | **Pure logic** — moisture decay and the anti-farming curve. | nothing but the stdlib |
 | `structure.py` | **Pure logic** — the plant's genome, its accumulating seeded growth, drought dieback, the death/reseed lifecycle, and the milestones earned from its life statistics. | nothing but the stdlib |
+| `voice.py` | **Pure logic** — everything the plant says about itself: the coarse voice state it is read from, the pools of phrasings, and the seeded deterministic choice between them. | nothing but the stdlib |
+| `presentation.py` | **Pure logic** — the frame around the plant: which life event it is having, and that event's accent colour, field structure, image placement and footer. Returns a `Panel`, never a `discord.Embed`. | nothing but the stdlib |
 | `render.py` | **I/O** — draws a structure into a PNG, with vitality modulating foliage, colour and posture, and any blossoms, seed heads or epiphyte on top. | Pillow |
 | `storage.py` | **I/O** — SQLite persistence of per-guild state. | stdlib `sqlite3` |
 | `bot.py` | **Thin adapter** — Discord client, slash commands, events, and the metabolic tick that grows and re-renders each plant; wires the above together. | discord.py, APScheduler |
@@ -30,10 +32,18 @@ The core discipline is a clean split between **pure logic** and **I/O**.
 
 ### Pure logic ⟷ I/O — the heart of the design
 
-- **Pure functions** (`moisture.py`, `structure.py`) are deterministic, have no
-  side effects, and contain **no `import discord`** and no Pillow. Same input,
-  same output. They never read the clock — elapsed time and timestamps are
-  passed in.
+- **Pure functions** (`moisture.py`, `structure.py`, `voice.py`,
+  `presentation.py`) are deterministic, have no side effects, and contain **no
+  `import discord`** and no Pillow. Same input, same output. They never read the
+  clock — elapsed time and timestamps are passed in.
+- **Any line the plant speaks belongs in `voice.py`**, never as a literal in
+  `bot.py`, and must follow the persona document in `CLAUDE.md` ("Die Stimme der
+  Pflanze") — including the rule that operational messages stay plain.
+- **Any embed's shape or colour belongs in `presentation.py`**, likewise never as
+  an ad-hoc `discord.Embed(...)` in `bot.py`. A new message, field or milestone
+  gets its own deliberate colour and structure per `CLAUDE.md` ("Präsentation") —
+  falling back to a bare functional embed is as unfinished as adding a new plant
+  state with no words for it.
 - **`bot.py` is a thin adapter**: it receives events, calls the pure logic, and
   sends the result to Discord. It holds no meaningful computation of its own.
 - **`render.py`** and **`storage.py`** isolate the two kinds of I/O (drawing and

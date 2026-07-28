@@ -44,6 +44,20 @@ of its own.
   with no command and nobody watching. Growth advances only while the bot is
   running; moisture, by contrast, is decayed exactly across any downtime, so a
   quiet week away still shows.
+- **Many voices, a wider crown** — growth isn't just gated by how much moisture
+  there is; how many *different* people the recent activity comes from shapes
+  the crown's shape. A channel kept alive by several regulars branches into a
+  wider, bushier crown than an equally healthy but single-voiced one — and,
+  just like watering, a handful of messages from a few fresh accounts today
+  doesn't count: a voice only registers after it has shown up across several
+  real days.
+- **A steady rhythm, a calmer shape** — separately from *who* is talking, *how
+  evenly* they talk over time shapes how symmetric or gnarled the body grows.
+  A channel with a steady day-to-day cadence, over an eight-week window, grows
+  a calmer, more even shape; one whose activity comes in occasional bursts —
+  quiet all week, then a weekend spike — grows a more irregular, knotted one,
+  at the same size and the same crown breadth. No amount of message volume can
+  buy steadiness: only genuine spread across real days can.
 - **A body that remembers** — vitality and body are separate things. Leaves
   flush on the living tips when moisture is high and fall when it drops, and
   colour and posture follow the mood of the moment — but growth and death are
@@ -65,6 +79,23 @@ of its own.
   generation resembles its parent yet is its own individual, and a plant that
   lived to set seed hands on a richer line. There is no final state — the line
   simply continues.
+- **It speaks for itself** — the plant describes its own condition in the first
+  person: thirst, drought, the wood a dry spell cost it, the flowering it can
+  finally afford. It has a pool of phrasings for every state it can be in and
+  picks from them by its own seed, so two servers rarely hear the same sentence
+  and no plant repeats itself from one day to the next. What it says changes only
+  when something real changes — a size class reached, a drought crossed, a death,
+  a bloom — never just because the picture was redrawn. Practical messages
+  (permissions, setup, `/help`) stay plain and unpoetic on purpose.
+- **The frame is a readout too** — the message around the plant is shaped by what
+  the plant is going through, not by a fixed template. Its accent colour shifts
+  with the plant's condition (leaf green when steady, gold at first thirst, brown
+  in drought, red while a drought is costing it wood, grey at death, and the
+  plant's *own* flower colour while it is in bloom), and each life event is laid
+  out differently: a seedling is a few words beside a small picture, a thriving
+  plant shows a full row of readings, a plant in drought shows a single number,
+  and a dead one shows nothing but the bare grey body. There is nothing to
+  configure here either — like the plant itself, the frame is derived, not chosen.
 - **Individuality** — every server's plant grows from its own random seed: a
   genome fixing its branching angles, bushiness, vigour, foliage and the colour it
   flowers in, so no two servers ever grow the same plant, and a seed carries those
@@ -178,10 +209,21 @@ lives in the code or repository.
 
 ## Development
 
-The pure logic — moisture decay and the anti-farming curve (`moisture.py`) and
-the plant's genome, growth, dieback, lifecycle and milestones (`structure.py`) —
-is tested with pytest and depends on neither Discord nor Pillow. Rendering (`render.py`) is
-isolated Pillow I/O, and persistence (`storage.py`) is isolated SQLite I/O.
+The pure logic — moisture decay and the anti-farming curve (`moisture.py`), the
+plant's genome, growth, dieback, lifecycle, milestones, author breadth and
+temporal rhythm (`structure.py`), everything it says about itself (`voice.py`),
+and the shape and colour of the message it says it in (`presentation.py`) — is
+tested with pytest and depends on neither Discord nor Pillow. Rendering
+(`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated
+SQLite I/O.
+
+Both the plant's voice and its frame are written to standing design documents in
+[CLAUDE.md](CLAUDE.md): "Die Stimme der Pflanze" covers its register, what it
+never says, which messages are spoken in character and which stay plain, and why
+the text holds still between heartbeats; "Präsentation" covers how each life
+event gets its own colour and layout, and why none of it is configurable. Read
+the relevant one before adding or changing any line the plant speaks, or any
+message it speaks in.
 
 ```bash
 pip install -r requirements-dev.txt

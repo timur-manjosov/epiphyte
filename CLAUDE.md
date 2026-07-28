@@ -229,6 +229,56 @@ angelegt.
   `can_host_epiphyte` in `structure.py` lassen Blüte, Samen und die
   namensgebende Epiphyte allein aus angehäufter, nicht erzwingbarer Gesundheit
   entstehen (Reserve-Bank, Mindestgröße, Mindestalter).
+- **Phase 11 — Autorenbreite (Kronenverzweigung) ✓:** `author_breadth` in
+  `structure.py` misst, aus wie vielen verschiedenen, über echte Zeit
+  gehaltenen Stimmen sich die jüngste Aktivität eines Kanals speist, und
+  skaliert darüber ausschließlich `branch_probability` in `grow()` — ein
+  vielstimmiger Kanal wächst eine breitere, buschigere Krone als ein sonst
+  gleich gesunder, aber einstimmiger. Die Präsenzgewichte pro Autor liegen in
+  `storage.py`s neuer `author_presence`-Tabelle, gefüttert über `bot.py`s
+  `on_message`, und werden mit demselben bereits anti-farming-gedeckelten
+  Betrag aufgefüllt, den `moisture.next_watering` ohnehin pro Nachricht
+  berechnet — ein einzelnes Konto kann sich also nur über mehrere echte Tage
+  hinweg echte Präsenz erarbeiten, nie durch einen einzelnen Nachrichtenschub.
+  Bei Tod/Wiedergeburt wird die Autorenliste geleert, genau wie `LifeStats` —
+  eine neue Generation muss sich ihre eigene Zuhörerschaft neu erarbeiten.
+- **Phase 12 — Zeitlicher Rhythmus (Wuchsform/Symmetrie) ✓:** `temporal_rhythm`
+  in `structure.py` misst, wie gleichmäßig die tägliche Aktivität eines Servers
+  über ein rollierendes 56-Tage-Fenster verteilt ist (Gini-Koeffizient der
+  Tageszählungen, invertiert), unabhängig davon, wie viele Stimmen daran
+  beteiligt sind — das bleibt allein `author_breadth`s Aufgabe. Skaliert
+  ausschließlich die organische Winkel-Streuung neuer Internodien in `grow()`
+  (`_jitter_multiplier`); ein gleichmäßig aktiver Server wächst einen ruhigeren,
+  symmetrischeren Körper, ein Server mit stoßweiser Aktivität (z. B. nur an
+  Wochenenden) einen unregelmäßigeren, knorrigeren — bei gleicher Größe und
+  gleicher Kronenverzweigung, da ein anderer Hebel als Phase 11 bewegt wird.
+  Die Tageszählungen liegen in `storage.py`s neuer `daily_activity`-Tabelle,
+  gefüttert über `bot.py`s `on_message`; da Gini skaleninvariant ist, kauft kein
+  Nachrichtenvolumen Gleichmäßigkeit — nur echte Streuung über echte Tage.
+  Unter `RHYTHM_MIN_ACTIVE_DAYS` aktiven Tagen im Fenster (zu junger oder zu
+  stiller Server) liefert die Funktion den neutralen Standardwert statt eines
+  durch Rauschen erzeugten Extrems. Anders als die Autorenliste wird
+  `daily_activity` bei Tod/Wiedergeburt **nicht** geleert: Rhythmus beschreibt
+  den Charakter der Community, nicht die Biografie der einzelnen Pflanze.
+- **Phase 13 — Die Stimme ✓:** `voice.py` gibt der Pflanze eine eigene Sprache in
+  der ersten Person — `read_state()` liest einen groben, diskreten `VoiceState`
+  aus Körper und Feuchtigkeit, und jede Zeile (Überschrift, Absatz, Meilenstein,
+  Keimungsgruß, Presence) wird deterministisch aus `blake2b(seed | Kategorie |
+  Zustand)` aus einem Pool gezogen. Dadurch bleibt der Text über beliebig viele
+  Herzschläge und über Neustarts hinweg stabil und ändert sich nur bei echten
+  Übergängen. Verbindlich dokumentiert unter „Die Stimme der Pflanze
+  (Persona-Bibel)"; Betriebsmeldungen bleiben ausdrücklich sachlich. Diese Phase
+  steht **quer** zur Signal-Roadmap: sie ändert keine Mechanik, kein Rendering
+  und kein Vitalitätssignal, nur was gesagt wird.
+- **Phase 14 — Die Präsentation ✓:** `presentation.py` gibt dem *Rahmen* um die
+  Pflanze dieselbe Absicht, die das gerenderte Bild längst hat. `life_event()`
+  verdichtet den Zustand zu genau einem `LifeEvent`, und jedes Event bekommt eine
+  eigene Akzentfarbe, eine eigene Feldstruktur und eine eigene Bildplatzierung —
+  keine Vorlage mit ausgetauschten Werten. Wie `voice.py` ist das Modul **reine
+  Logik**: es liefert ein `Panel`, und `bot.py` gießt das in vier Zeilen in ein
+  `discord.Embed`. Verbindlich dokumentiert unter „Präsentation"; diese Phase
+  steht wie Phase 13 **quer** zur Signal-Roadmap und ändert weder Mechanik noch
+  Rendering noch ein Vitalitätssignal — nur, wie das Gesagte dasteht.
 
 **Offen:**
 
@@ -238,7 +288,7 @@ angelegt.
 - **Weitere, noch unbenannte Phasen:** zusätzliche Vitalitätssignale (siehe
   „Zulassungstest für ein neues Vitalitätssignal" oben) und die botanischen
   Dimensionen, die sie antreiben — z. B. Reaktionen, Sprachaktivität,
-  Threads, zeitlicher Rhythmus, Kanalbreite.
+  Threads, Kanalbreite.
 
 **Es gibt keinen definierten letzten Schritt.** Der Phasenplan bleibt bewusst
 offen; weitere Stufen dürfen entstehen, solange sie der Emergenz-These treu
@@ -253,10 +303,18 @@ epiphyte/
 │                        #   Scheduler-Verdrahtung (metabolic_tick)
 ├── moisture.py          # REINE LOGIK: Feuchtigkeit/Vitalität — Zerfall & Fairness      [Phase 1]
 ├── structure.py         # REINE LOGIK: akkumulierte Struktur, Genom (aus Seed), grow(),
-│                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte  [Phase 5–9]
+│                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte,
+│                        #   Autorenbreite (author_breadth), zeitlicher Rhythmus
+│                        #   (temporal_rhythm)                      [Phase 5–9, 11, 12]
+├── voice.py             # REINE LOGIK: die Stimme der Pflanze — VoiceState, Text-Pools,
+│                        #   deterministische Auswahl (siehe Persona-Bibel)     [Phase 13]
+├── presentation.py      # REINE LOGIK: der Rahmen um die Pflanze — LifeEvent, Akzentfarbe,
+│                        #   Feldstruktur, Bildplatzierung, Footer (siehe „Präsentation");
+│                        #   liefert ein Panel, kein Embed                      [Phase 14]
 ├── render.py            # Struktur → PNG via Pillow (gekapselte I/O)                    [Phase 2, erweitert 5–9]
 ├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
-│                        #   Kanal/Nachricht, dead_ticks (I/O)                     [Phase 3, erweitert 5–9]
+│                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity
+│                        #   (I/O)                                  [Phase 3, erweitert 5–9, 11, 12]
 ├── tests/               # pytest, ausschließlich für die reine Logik                    [ab Phase 1]
 ├── requirements.txt
 ├── requirements-dev.txt # pytest, reine Dev-Abhängigkeit, getrennt von der Laufzeit      [Phase 1]
@@ -289,10 +347,11 @@ Damit die Lücke zwischen These und Implementierung nicht in Prosa untergeht:
 | Nachrichten (Autorschaft, Häufigkeit) → Feuchtigkeit, Wachstum | **live** (`moisture.py`, `on_message` in `bot.py`) |
 | Feuchtigkeits-Zerfall über verstrichene Zeit → Verdorren | **live** (`moisture.decay`) |
 | Abnehmende Grenzerträge pro Person/Fenster → Anti-Farming | **live** (`moisture.effective_water_amount`) |
+| Autorenbreite (Anzahl verschiedener Stimmen) → Verzweigungsgrad der Krone | **live** (`structure.author_breadth`, `grow()`, Phase 11) |
+| Zeitlicher Rhythmus (Gleichmäßigkeit der Tagesaktivität) → Wuchsform/Symmetrie | **live** (`structure.temporal_rhythm`, `grow()`, Phase 12) |
 | Reaktionen → eigene Dimension | entworfen, noch nicht gebaut |
 | Sprachaktivität (Voice) → eigene Dimension | entworfen, noch nicht gebaut |
 | Threads → eigene Dimension | entworfen, noch nicht gebaut |
-| Zeitlicher Rhythmus (Tages-/Wochengang) → eigene Dimension | entworfen, noch nicht gebaut |
 | Kanalbreite (wie viele verschiedene Kanäle aktiv sind) → eigene Dimension | entworfen, noch nicht gebaut |
 
 Jedes „entworfen, noch nicht gebaut"-Signal muss vor der Implementierung den
@@ -301,7 +360,8 @@ echte Zeit, für eine Einzelperson nicht farmbar).
 
 ## Reine Logik ⟷ I/O (das Herz der Struktur)
 
-- **Reine Funktionen** (`moisture.py`, `structure.py`): deterministisch, ohne
+- **Reine Funktionen** (`moisture.py`, `structure.py`, `voice.py`,
+  `presentation.py`): deterministisch, ohne
   Seiteneffekte, **ohne jeden `import discord`** und ohne Uhr — Zeit und
   Zeitstempel werden hereingereicht. Feuchtigkeits-Zerfall und Wachstum sind reine
   Berechnungen. `grow()` ist **seeded-deterministisch**: gleiche Struktur,
@@ -347,6 +407,187 @@ echte Zeit, für eine Einzelperson nicht farmbar).
 | Stängel oben (lebendig) | `#8FBCBB` | 143, 188, 187 |
 | Blätter | `#A3BE8C` | 163, 190, 140 |
 | Knospe / Akzent | `#88C0D0` | 136, 192, 208 |
+
+## Die Stimme der Pflanze (Persona-Bibel)
+
+Die Sprache des Bots ist genauso Leinwand wie das gerenderte Bild. Dieser
+Abschnitt ist für die Texte, was das Nord-Schema für die Grafik ist: die
+verbindliche Referenz, die dafür sorgt, dass Dutzende einzelner Strings **eine**
+Stimme bleiben statt ein Haufen unabhängig hübscher Sätze. Alle Pools liegen in
+`voice.py`; kein nutzersichtbarer Pflanzentext gehört je wieder als Literal nach
+`bot.py`.
+
+### Wer spricht
+
+Die Pflanze selbst, in der **ersten Person** — „I", niemals „the plant", „your
+server's plant" oder „it". Sie beschreibt ihren eigenen Zustand als Erlebnis,
+nicht als Statusmeldung: sie *hat Durst*, sie meldet keine Feuchtigkeit. Sie
+weiß nichts über die Maschinerie, in der sie läuft, und redet entsprechend nie
+darüber.
+
+### Register
+
+Nüchtern, körperlich, unsentimental. Kurze Aussagesätze, oft zwei pro Zeile, bei
+denen der zweite den ersten hart qualifiziert („I am withered. I am not gone.
+Those are different things."). Sinnlich verankert in Wasser, Licht, Holz, Blatt,
+Boden und **Zeit** — die Pflanze denkt in Wochen und Jahreszeiten, nie in
+Minuten. Sie ist ehrlich bis zur Unfreundlichkeit über sich selbst, inklusive
+Sterben und Narben. Kein Ausrufezeichen, keine Niedlichkeit, kein Zwinkern zum
+Publikum, keine Whimsy um ihrer selbst willen. Den Raum darf sie direkt
+ansprechen („Come back.") — sparsam, das ist ihr stärkstes Mittel.
+
+### Was sie nie tut
+
+- **Nie** Discord-Mechanik benennen: keine channels, messages, servers, guilds,
+  bots, commands, embeds, users. Metonyme dafür sind erlaubt und erwünscht —
+  „this room", „voices", „the quiet", „being talked near".
+- **Nie** aus der Rolle in technische Sprache fallen: keine Zahlen, Prozente,
+  Schwellwerte, Ticks oder Modulnamen im gesprochenen Text.
+- **Nie** über sich in der dritten Person reden.
+- **Nie** denselben Satz sichtbar wiederholen: jede Kategorie hat einen Pool, und
+  eine Überschrift wiederholt nie wörtlich eine Formulierung aus dem Absatz
+  darunter (das liest sich als Stottern — `test_voice.py` bewacht beides).
+- **Nie** etwas versprechen, das die Mechanik nicht hält („water me and I will
+  bloom tomorrow").
+
+### Gesprochen vs. sachlich (die Grenze)
+
+Bewusst gezogen und nicht zu verwischen: **Zustände der Pflanze sprechen,
+Betriebsmeldungen nicht.** Wer als Moderator ein Rechteproblem sucht, darf nie
+Poesie entschlüsseln müssen, um zu verstehen, was kaputt ist.
+
+| Fläche | Stimme |
+|---|---|
+| Überschrift und Text der lebenden Nachricht (Wachstum, Dürre, Tod, Wiedergeburt) | **gesprochen** |
+| `/plant`-Momentaufnahme (dasselbe Embed) | **gesprochen** |
+| Meilensteine — Blüte, Samen, Epiphyte | **gesprochen** |
+| Erste Keimung nach der Bestätigung | **gesprochen** (eine Zeile) + ein sachlicher Satz daneben |
+| Statuszeile des Bots (Presence) | **gesprochen**, aber rotierend (siehe unten) |
+| Fehlende Rechte, unerreichbarer Kanal, Kanal binden/umziehen | sachlich |
+| `/help`, Persistenz-Hinweis, DM-Absage, abgelaufene Dialoge | sachlich |
+| Embed-Felder (Moisture, Stage, Age, Generation, Lived) | sachlich — Instrumente **neben** der Pflanze, nicht ihre Rede |
+
+### Vielfalt ohne Zufall
+
+Jede Kategorie ist ein Pool von mindestens acht gleichwertigen Formulierungen
+(Stimmungen: zwölf). Welche gezogen wird, ergibt sich **deterministisch** aus
+`blake2b(seed | Kategorie | Zustand)` — bewusst nicht aus `random` und nicht aus
+`hash()`, dessen Salt sich pro Prozess ändert: die lebende Nachricht muss nach
+einem Neustart dasselbe sagen wie davor, sonst sieht jeder Restart wie ein
+Stimmungsumschwung aus. Dieselbe Pflanze im selben Zustand sagt also immer
+dasselbe, zwei verschiedene Pflanzen im gleichen Zustand meist Verschiedenes.
+Das ist dieselbe Seeded-Determinismus-Regel wie bei `grow()` — und der Grund,
+warum die Stimme überhaupt testbar ist.
+
+### Tick-Stabilität
+
+Die lebende Nachricht wird bei **jedem** Herzschlag neu gerendert. Der Text darf
+sich dabei nicht mitbewegen — sonst wirkt die Pflanze sprunghaft statt lebendig.
+Deshalb liest `voice.read_state()` einen bewusst **groben, diskreten**
+`VoiceState` (Stimmung, Größenklasse, Generation, getragene Meilensteine); jede
+Zeile ist eine reine Funktion davon. Neuer Text entsteht **nur** bei einem echten
+Übergang:
+
+- Feuchtigkeitsband gewechselt (inkl. eigenes Band unterhalb der Dieback-Schwelle),
+- eine Größenklasse weiter gewachsen,
+- gestorben, oder als Nachfolger wieder gekeimt,
+- Blüte, Samen oder Epiphyte gekommen bzw. gegangen.
+
+Alles andere — ein gewöhnlicher Wachstumsschritt, ein paar Prozent Feuchtigkeit,
+ein Neustart des Bots — lässt den Text unangetastet. Dafür muss **nichts**
+zusätzlich persistiert werden: der Zustand *ist* der Schlüssel. Einzige Ausnahme
+ist die Presence-Statuszeile, die die Pflanze nicht als Individuum spricht,
+sondern der Bot als Ganzes trägt; sie rotiert auf ihrem eigenen Timer.
+
+### Komponierbarkeit
+
+Ein Absatz ist „Stimmungszeile + Körperzeile". Die Stimmungszeile gehört dem
+Wasser und dem Empfinden, die Körperzeile dem Holz und der Größe — keine Hälfte
+greift ins Thema der anderen. Nur so bleibt jede Paarung lesbar, und nur so
+klingt eine Aussage über die Krone nicht absurd auf einem Keimling. Stimmungen
+sprechen deshalb nie über Größe, Kapitel nie über Wasser.
+
+### Offener Vorschlag: Idiolekt (nicht gebaut)
+
+Jede Pflanze hat schon ein Genom aus ihrem Seed. Denkbar wäre, aus demselben
+Seed auch einen sprachlichen Eigenton abzuleiten — etwa ein wiederkehrendes Bild
+oder eine Vokabelneigung, die nur diese eine Pflanze bedient, sodass Server ihre
+Pflanze nicht nur an der Form, sondern am Tonfall erkennen. **Kosten:** die Pools
+müssten pro Idiolekt-Variante mehrfach existieren oder sich aus Bausteinen
+zusammensetzen; beides vervielfacht den Schreibaufwand und macht genau die
+Einheitlichkeit angreifbar, die dieser Abschnitt sichert. Bewusst nicht gebaut —
+Entscheidung liegt beim Maintainer.
+
+## Präsentation (verbindlich für jede künftige Phase)
+
+Was das Nord-Schema für die Grafik ist und die Persona-Bibel für die Texte, ist
+dieser Abschnitt für **den Rahmen um beides**: Akzentfarbe, Feldstruktur,
+Bildplatzierung, Footer. Alles davon lebt in `presentation.py` und ist reine
+Logik — das Modul liefert ein `Panel`, `bot.py` gießt es in ein `discord.Embed`.
+Kein nutzersichtbarer Pflanzen-Rahmen gehört je wieder als ad-hoc
+`discord.Embed(...)` nach `bot.py`.
+
+### Die stehende Regel
+
+**Jede künftige Phase, die eine neue Nachricht, ein neues Embed, ein neues Feld
+oder einen neuen Meilenstein einführt, entwirft dessen Form und Farbe bewusst
+nach dem Muster unten — statt auf ein nacktes Funktions-Embed zurückzufallen.**
+Ein neuer Zustand ohne eigene Farbe und ohne eigene Feldstruktur ist genauso
+unfertig wie ein neuer Zustand ohne eigenen Text-Pool in `voice.py`. Das ist die
+Präsentations-Hälfte derselben Anforderung, die Phase 13 für die Sprache gestellt
+hat, und sie gilt ab hier dauerhaft — auch für Phase 10 (Umwelt-Tönung) und jedes
+später zugelassene Vitalitätssignal.
+
+### Die vier Prinzipien
+
+1. **Abgeleitet, nie konfiguriert.** Farbe und Form ergeben sich ausschließlich
+   aus vorhandenem Zustand — genau wie das Aussehen der Pflanze selbst. Kein
+   Theme, kein Style-Parameter, kein Vorschau-Command, keine neue
+   Konfigurationsfläche. Der Oberflächen-Minimalismus aus der Emergenz-Regel gilt
+   für den Rahmen unverändert. Eine Farbwahl für Nutzer wäre exakt derselbe
+   Verstoß wie ein Settings-Menü für die Pflanze.
+2. **Ein Lebensereignis, eine Form.** `life_event()` verdichtet den Zustand auf
+   genau ein `LifeEvent`, und jedes bekommt eine *eigene* Feldstruktur — nicht
+   dieselbe Zeile mit anderen Werten. Die Reihenfolge in `life_event()` ist die
+   eigentliche Entwurfsentscheidung und liest sich in vier Stufen: **Ende oder
+   Anfang** (Tod, Keimung, Wiedergeburt) schlägt **was gerade passiert** (Dieback,
+   Blüte, Dürre, Durst) schlägt **was der Körper geworden ist** (Epiphyte) schlägt
+   **den gewöhnlichen Tag** (üppig, stetig). Dauerhafte Zustände rangieren bewusst
+   *unter* vorübergehenden: ein Baum, der zum Lebensraum geworden ist, zeigt
+   trotzdem seinen Durst, wenn er durstig ist.
+3. **Das Instrumenten-Feld öffnet und schließt sich mit der Pflanze.** Vier Felder
+   bei Überfluss, drei im Normalfall, zwei bei Durst, eins in der Dürre, keins bei
+   Keimung und Tod — an beiden Enden gibt es nichts zu messen, was die Pflanze
+   nicht selbst besser gesagt hat. Felder bleiben sachlich (Persona-Bibel,
+   „Gesprochen vs. sachlich"); der einzige Feldwert, der je gesprochen ist, ist ein
+   über die volle Breite hochgezogener Meilenstein.
+4. **Eine leise Konstante darunter.** Der Footer ist das einzige Element, dessen
+   *Form* sich nie ändert: seed-abgeleitetes Sigil, Generation, Alter in Tagen,
+   dann die dauerhaften Marken (Samen, Epiphyte). Weil Herkunft und Alter dort
+   stehen, dürfen die Feldzeilen darüber so frei variieren. Das Sigil folgt
+   derselben `blake2b`-Determinismus-Regel wie die Stimme — nie `hash()`, dessen
+   Salt pro Prozess wechselt.
+
+### Tick-Stabilität, wie bei der Stimme
+
+Der Rahmen wird bei jedem Herzschlag neu gebaut und darf sich dabei nicht
+mitbewegen. Weil Farbe und Form reine Funktionen desselben groben, diskreten
+`VoiceState` sind, ändern sie sich nur bei echten Übergängen — dieselben, die auch
+den Text neu ziehen. Einzige beabsichtigte Ausnahme ist der Tageszähler im Footer:
+er ist ein Instrument, keine Rede.
+
+### Die Grenze zum Bild (nicht verwischen)
+
+`presentation.py` rahmt das gerenderte PNG, es fasst es nie an. Alles innerhalb
+des Bildes — Körper, Palette, Laub, Blüten, Narben — gehört allein `render.py`.
+Die Bildplatzierung (`ImagePlacement.FULL` vs. `THUMBNAIL`) ist ausdrücklich
+erlaubt, weil sie nur den *Slot* in der Nachricht wählt: das PNG ist in beiden
+Fällen byte-identisch. Ein getönter oder gerahmter Rand um das fertige Bild wäre
+ein Compositing-Schritt *nach* `render.render()` und damit prinzipiell zulässig —
+er ist aber **bewusst nicht gebaut** und braucht eine ausdrückliche Entscheidung
+des Maintainers, bevor ihn jemand einführt. Solange die Akzentfarbe des Embeds
+den Zustand trägt, ist der Rand redundant; er würde nur die Grenze zum Bild
+unnötig nah an `render.py` schieben.
 
 ## Kommandos
 

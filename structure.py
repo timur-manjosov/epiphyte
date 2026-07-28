@@ -35,12 +35,27 @@ growth) — that seeded determinism *is* each plant's individuality. Growth is
 also chunk-invariant: running ``steps`` steps at once yields exactly the same
 structure as running the same steps one at a time, because every decision is
 seeded by ``(seed, node_id, step_index)`` and never by call boundaries.
+
+Message volume is not the only signal that shapes the body: author breadth
+(:func:`author_breadth`), how many distinct people the channel's recent activity
+comes from, additionally scales how eagerly the crown forks versus merely
+extends — a many-voiced channel grows a wider, bushier crown than an equally
+healthy but single-voiced one, at the same overall size.
+
+Temporal rhythm (:func:`temporal_rhythm`) is a second, independent signal: how
+evenly the channel's daily activity is spread over time, as opposed to how many
+people it comes from. A channel with a steady day-to-day cadence scales down the
+organic angle noise applied to every internode, growing a calmer, more symmetric
+body; a channel whose activity comes in occasional bursts scales that noise up,
+growing a more irregular, gnarled one — at the same size and the same crown
+breadth, since it touches a different knob than :func:`author_breadth` does.
 """
 
 from __future__ import annotations
 
 import math
 import random
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 
@@ -83,6 +98,78 @@ LENGTH_JITTER: float = 0.15
 UPRIGHT_ANGLE: float = 90.0
 #: How far from upright a new limb may set out. Branches spread; they never dive.
 MAX_BRANCH_SPREAD: float = 62.0
+
+# --- Breadth constants (how many voices, not just how much) ------------------
+#
+# The first vitality dimension beyond message-count-driven growth: how many
+# distinct people are talking, not how much total volume there is. An author's
+# presence weight lives and decays on the same [0, 1] scale as moisture (see
+# ``moisture.decay``/``moisture.water``), but the caller (``bot.py``) tops it up
+# with the *same already-anti-farmed amount* moisture.next_watering computes for
+# that message — so, exactly like moisture itself, a single account cannot buy
+# presence by flooding; it still costs real elapsed days. Breadth only ever
+# scales branch_probability — how often a tip forks rather than merely extends
+# — never capacity, moisture, size or colour, so it stays a legible, narrow
+# effect: a many-voiced and a one-voiced channel of the same overall health
+# end up the same size, just differently shaped.
+
+#: Half-life (seconds) of a single author's presence weight. A week: an order of
+#: magnitude above moisture's own one-day half-life, long enough to smooth
+#: weekday/weekend noise in who is around, short enough that a channel which has
+#: genuinely narrowed to one or two people sees breadth fall within weeks rather
+#: than carrying a lifetime average forward — the same "recent reality, not
+#: history" principle moisture already follows, just on the slower cadence a
+#: structural trait needs to be legible on.
+AUTHOR_PRESENCE_HALF_LIFE_SECONDS: float = 7 * 24 * 60 * 60  # 1 week
+#: Presence weight an author must accumulate before counting as one of the
+#: plant's active recent voices. Because that weight only rises by the same
+#: anti-farmed amount moisture does, a fresh account needs several distinct real
+#: days of showing up to cross this — a single drive-by message, or a burst of
+#: messages within one day, does not register.
+AUTHOR_PRESENCE_FLOOR: float = 0.3
+#: Distinct active voices at which author breadth saturates (1.0). Six — the
+#: same order of magnitude as the modest crowd that clears HEALTHY in
+#: test_farming.py's anti-farming demonstration, so it takes a real
+#: conversation, not a couple of accounts, to fill out a wide crown.
+BREADTH_SATURATION_VOICES: int = 6
+#: Range author breadth scales a tip's branch chance across. Neutral (1.0) sits
+#: at breadth 0.5, which is what grow() defaults to when a caller does not pass
+#: breadth at all — so every pre-Phase-11 call site is unaffected.
+BREADTH_BRANCH_MULTIPLIER_MIN: float = 0.7
+BREADTH_BRANCH_MULTIPLIER_MAX: float = 1.3
+
+# --- Rhythm constants (how evenly, not just how much or by whom) -------------
+#
+# The second vitality dimension beyond message-count-driven growth: how evenly a
+# channel's activity is spread across days, independent of total volume and of
+# author breadth. It touches a different lever than breadth (organic angle noise,
+# not branch chance), so the two stay legible and non-interfering side by side —
+# see grow()'s docstring. Rhythm is read from ``daily_activity``, one row per
+# guild per calendar day, already being written for exactly this purpose; no new
+# Discord event is captured, only a new analysis over totals bot.py already knows.
+
+#: Length, in whole calendar days, of the rolling window temporal_rhythm() reads.
+#: Four times AUTHOR_PRESENCE_HALF_LIFE_SECONDS's week: rhythm is meant to read a
+#: community's slower-moving character, not this week's mood, so one anomalous
+#: week is diluted to a small fraction of the window instead of dominating it.
+RHYTHM_WINDOW_DAYS: int = 56  # 8 weeks
+#: Calendar days a window must have seen at least one message on before
+#: temporal_rhythm() trusts the computed score at all. Below this a server is
+#: either too young to have filled the window, or too quiet to have a real daily
+#: pattern yet — both read as "not enough signal", not as a genuinely bursty one.
+RHYTHM_MIN_ACTIVE_DAYS: int = 10
+#: Rhythm score returned when there is not yet enough signal to trust — the same
+#: "no effect, no judgement" role BREADTH_BRANCH_MULTIPLIER_MIN/MAX's midpoint
+#: plays for breadth, and what grow() defaults to when a caller does not pass
+#: rhythm at all.
+NEUTRAL_RHYTHM: float = 0.5
+#: Range temporal rhythm scales a new internode's organic angle-noise amplitude
+#: across. A perfectly steady channel (rhythm 1.0) calms the noise down to
+#: RHYTHM_JITTER_MULTIPLIER_MIN; a heavily bursty one (rhythm 0.0) amplifies it up
+#: to RHYTHM_JITTER_MULTIPLIER_MAX. Neutral (1.0, no effect) sits at rhythm 0.5 —
+#: NEUTRAL_RHYTHM — so a pre-Phase-12 call site is unaffected.
+RHYTHM_JITTER_MULTIPLIER_MIN: float = 0.6
+RHYTHM_JITTER_MULTIPLIER_MAX: float = 1.4
 
 # --- Dieback constants (the body remembers drought) --------------------------
 #
@@ -479,7 +566,11 @@ def _clamp01(value: float) -> float:
 
 
 def _nudged_angle(
-    base_angle: float, axis_angle: float, genome: Genome, rng: random.Random
+    base_angle: float,
+    axis_angle: float,
+    genome: Genome,
+    rng: random.Random,
+    jitter_multiplier: float = 1.0,
 ) -> float:
     """Pull ``base_angle`` back toward its limb's bearing by the genome's
     gravitropism, then add one organic jitter draw. Consumes one random number.
@@ -487,10 +578,14 @@ def _nudged_angle(
     Pulling toward the limb's own bearing rather than toward vertical is what lets
     a branch keep the direction it set out in: the trunk holds itself upright, a
     limb holds itself outward, and the tree keeps its proportions as it ages
-    instead of drawing itself together into a vertical rope.
+    instead of drawing itself together into a vertical rope. ``jitter_multiplier``
+    (see :func:`_jitter_multiplier`) scales the jitter draw's amplitude — temporal
+    rhythm's only effect on growth, independent of author breadth's effect on
+    branch chance.
     """
     toward_axis = base_angle + genome.gravitropism * (axis_angle - base_angle)
-    return toward_axis + rng.uniform(-genome.angle_jitter, genome.angle_jitter)
+    jitter = genome.angle_jitter * jitter_multiplier
+    return toward_axis + rng.uniform(-jitter, jitter)
 
 
 def _limb_bearing(axis_angle: float, side: float, genome: Genome) -> float:
@@ -533,12 +628,99 @@ def _capacity(genome: Genome) -> int:
     return max(MIN_CAPACITY, round(BASE_CAPACITY * genome.vigor))
 
 
+def author_breadth(presence_weights: Iterable[float]) -> float:
+    """Return how many-voiced a channel's recent activity is, in ``[0, 1]``.
+
+    ``presence_weights`` are each distinct author's current presence weight,
+    already decayed to now by the caller (``bot.py``, mirroring how
+    ``GuildState.moisture`` is decayed lazily rather than on write) — see
+    :data:`AUTHOR_PRESENCE_HALF_LIFE_SECONDS`. An author only counts once their
+    weight has reached :data:`AUTHOR_PRESENCE_FLOOR`; the count of qualifying
+    authors then saturates at :data:`BREADTH_SATURATION_VOICES`. Pure: no clock,
+    no I/O — pass in whatever weights the caller already has.
+    """
+    voices = sum(1 for weight in presence_weights if weight >= AUTHOR_PRESENCE_FLOOR)
+    return _clamp01(voices / BREADTH_SATURATION_VOICES)
+
+
+def day_bucket(timestamp: float) -> int:
+    """Return the whole-UTC-day bucket a Unix ``timestamp`` falls into.
+
+    Pure integer division, exposed as a function so ``bot.py`` and this module
+    agree on exactly the same bucketing without either reading a clock: the
+    caller always supplies the timestamp.
+    """
+    return int(timestamp // 86400)
+
+
+def temporal_rhythm(daily_counts: Sequence[int]) -> float:
+    """Return how evenly ``daily_counts`` spreads activity across days, in ``[0, 1]``.
+
+    ``daily_counts`` is one message total per calendar day across
+    :data:`RHYTHM_WINDOW_DAYS` consecutive days ending today, zero-filled by the
+    caller (``bot.py``) for days with no messages at all — silence is a data
+    point, not a gap. The measure is the Gini coefficient of that list, inverted
+    so ``1.0`` is a channel whose daily count barely varies and ``0.0`` is one
+    where activity concentrates on a handful of days and falls silent the rest
+    (a "weekend spikes, otherwise silent" channel).
+
+    Gini reads the *shape* of the distribution, not its size: it is invariant to
+    scaling every count by the same factor, so a burst that dumps ten messages
+    into one day or ten thousand scores identically low — there is no volume
+    that buys steadiness, only genuine spread across real days (see
+    ``tests/test_rhythm.py``). Below :data:`RHYTHM_MIN_ACTIVE_DAYS` active days
+    in the window there is not enough signal to trust, so this returns
+    :data:`NEUTRAL_RHYTHM` instead of an extreme score produced by noise.
+
+    Pure: no clock, no I/O — the caller already holds whatever window it wants
+    read.
+    """
+    active_days = sum(1 for count in daily_counts if count > 0)
+    total = sum(daily_counts)
+    if active_days < RHYTHM_MIN_ACTIVE_DAYS or total == 0:
+        return NEUTRAL_RHYTHM
+    n = len(daily_counts)
+    ordered = sorted(daily_counts)
+    weighted_sum = sum((rank + 1) * count for rank, count in enumerate(ordered))
+    gini = (2 * weighted_sum) / (n * total) - (n + 1) / n
+    return _clamp01(1.0 - gini)
+
+
+def _jitter_multiplier(rhythm: float) -> float:
+    """Scale factor temporal rhythm applies to a new internode's angle noise.
+
+    Linear between :data:`RHYTHM_JITTER_MULTIPLIER_MAX` (a heavily bursty
+    channel, at rhythm ``0.0``) and :data:`RHYTHM_JITTER_MULTIPLIER_MIN` (a
+    perfectly steady one, at rhythm ``1.0``), with ``1.0`` — no effect at all —
+    at ``rhythm == 0.5`` (:data:`NEUTRAL_RHYTHM`).
+    """
+    rhythm = _clamp01(rhythm)
+    return RHYTHM_JITTER_MULTIPLIER_MAX - rhythm * (
+        RHYTHM_JITTER_MULTIPLIER_MAX - RHYTHM_JITTER_MULTIPLIER_MIN
+    )
+
+
+def _branch_multiplier(breadth: float) -> float:
+    """Scale factor author breadth applies to a tip's branch chance.
+
+    Linear between :data:`BREADTH_BRANCH_MULTIPLIER_MIN` (a single dominant
+    voice) and :data:`BREADTH_BRANCH_MULTIPLIER_MAX` (a saturated crowd), with
+    ``1.0`` — no effect at all — at ``breadth == 0.5``.
+    """
+    breadth = _clamp01(breadth)
+    return BREADTH_BRANCH_MULTIPLIER_MIN + breadth * (
+        BREADTH_BRANCH_MULTIPLIER_MAX - BREADTH_BRANCH_MULTIPLIER_MIN
+    )
+
+
 def _grow_tip(
     tip: Node,
     nodes: list[Node],
     genome: Genome,
     step_index: int,
     terminate_chance: float,
+    branch_multiplier: float,
+    jitter_multiplier: float,
     rng: random.Random,
 ) -> list[int]:
     """Advance one active tip by one step, mutating the working ``nodes`` list.
@@ -550,7 +732,9 @@ def _grow_tip(
     out on a bearing of its own and keeps it. New node ids continue the sequence,
     preserving the ``id == index`` invariant. Returns the ids of any new tip nodes
     created (0, 1 or 2), so the caller can extend its active-tips cache without
-    rescanning the body for them.
+    rescanning the body for them. ``jitter_multiplier`` (see
+    :func:`_jitter_multiplier`) scales every angle drawn this call — temporal
+    rhythm's effect, applied independently of ``branch_multiplier``'s.
     """
     nodes[tip.id] = replace(tip, state=NodeState.WOODY)
     if rng.random() < terminate_chance:
@@ -563,18 +747,18 @@ def _grow_tip(
 
     new_tip_ids: list[int] = []
 
-    continuation_angle = _nudged_angle(tip.angle, tip.axis_angle, genome, rng)
+    continuation_angle = _nudged_angle(tip.angle, tip.axis_angle, genome, rng, jitter_multiplier)
     continuation = _child(
         tip, continuation_angle, tip.axis_angle, internode(), step_index, tip.order, len(nodes)
     )
     nodes.append(continuation)
     new_tip_ids.append(continuation.id)
 
-    branch_chance = genome.branch_probability * (BRANCH_ORDER_DECAY ** tip.order)
+    branch_chance = genome.branch_probability * branch_multiplier * (BRANCH_ORDER_DECAY ** tip.order)
     if tip.order < MAX_ORDER and rng.random() < branch_chance:
         side = 1.0 if rng.random() < 0.5 else -1.0
         bearing = _limb_bearing(tip.axis_angle, side, genome)
-        lateral_angle = _nudged_angle(bearing, bearing, genome, rng)
+        lateral_angle = _nudged_angle(bearing, bearing, genome, rng, jitter_multiplier)
         lateral = _child(
             tip, lateral_angle, bearing, internode(), step_index, tip.order + 1, len(nodes)
         )
@@ -619,6 +803,8 @@ def _growth_step(
     capacity: int,
     step_index: int,
     active_tips: list[int],
+    branch_multiplier: float,
+    jitter_multiplier: float,
 ) -> list[int]:
     """Apply one growth step: living tips may extend, branch, or cap off.
 
@@ -628,7 +814,11 @@ def _growth_step(
     grows. Returns the next step's active tip ids: dormant tips keep their
     relative order, and newly created tips are appended after them — exactly what
     a fresh scan of ``nodes`` would produce, since every id created this step is
-    higher than every id already in ``active_tips``.
+    higher than every id already in ``active_tips``. ``branch_multiplier`` (see
+    :func:`_branch_multiplier`) scales every tip's branch chance this step —
+    author breadth's only effect on growth. ``jitter_multiplier`` (see
+    :func:`_jitter_multiplier`) scales every tip's angle-noise amplitude this step
+    — temporal rhythm's only effect, independent of ``branch_multiplier``'s.
     """
     # The termination pressure is sampled once per step from the crown size at its
     # start, so it does not depend on the order tips are visited within the step,
@@ -643,7 +833,12 @@ def _growth_step(
         if rng.random() >= extension_chance:
             dormant.append(tip_id)  # dormant this step; may grow in a later one
             continue
-        grown.extend(_grow_tip(tip, nodes, genome, step_index, terminate_chance, rng))
+        grown.extend(
+            _grow_tip(
+                tip, nodes, genome, step_index, terminate_chance,
+                branch_multiplier, jitter_multiplier, rng,
+            )
+        )
     return dormant + grown
 
 
@@ -734,7 +929,11 @@ def _advance_epiphyte(
 
     It grows and dies back by exactly the same rules as any plant, keyed by its own
     seed and its own age, only far slower — but it accumulates no milestones of its
-    own: an epiphyte never blooms and never carries an epiphyte in turn.
+    own: an epiphyte never blooms and never carries an epiphyte in turn. It also
+    does not inherit the host channel's author breadth or temporal rhythm: it is a
+    passenger on one limb, not itself a reading of the server's crowd or cadence,
+    so its branching and its angle noise always use the neutral multiplier (as if
+    breadth and rhythm were exactly their neutral midpoints).
     """
     genome = epiphyte_genome(host_seed)
     body = epiphyte.structure
@@ -752,6 +951,8 @@ def _advance_epiphyte(
             _capacity(genome),
             body.step_count,
             active_tips,
+            1.0,
+            1.0,
         )
     return replace(
         epiphyte,
@@ -761,7 +962,14 @@ def _advance_epiphyte(
     )
 
 
-def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> Structure:
+def grow(
+    structure: Structure,
+    genome: Genome,
+    moisture: float,
+    steps: int,
+    breadth: float = 0.5,
+    rhythm: float = 0.5,
+) -> Structure:
     """Return the structure advanced ``steps`` life-steps under ``moisture`` (pure).
 
     Each step runs one of two regimes, chosen by the vitality that ``moisture``
@@ -771,6 +979,21 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
       living tip may extend, branch, or cap off. The chance a tip extends scales
       with moisture — brisk when wet, almost nothing when barely healthy — and the
       crown self-limits at its carrying capacity. This is the honest signal.
+      ``breadth`` (see :func:`author_breadth`), how many distinct people the
+      channel's recent activity comes from, additionally scales how often a tip
+      forks rather than merely extends (:func:`_branch_multiplier`) — many
+      voices grow a wider, more branched crown; one dominant voice grows a
+      narrower, straighter one. It defaults to ``0.5``, the neutral point with
+      no effect at all, so a caller that does not pass it reproduces the exact
+      growth this function always produced. ``rhythm`` (see
+      :func:`temporal_rhythm`), how evenly that activity is spread across days
+      rather than who it comes from, independently scales the organic angle
+      noise applied to every new internode (:func:`_jitter_multiplier`) — a
+      steady daily cadence calms the body into a more symmetric shape, a bursty
+      one grows a more irregular, gnarled one — at the same size and the same
+      branching ``breadth`` alone would have produced, since it scales a
+      different, independent knob. It defaults to ``0.5`` for the same reason
+      ``breadth`` does.
     * **Dieback** (vitality below the threshold): the plant is parched, so instead
       of growing it dies back from the outside in. Dead wood stays in the body
       forever, a permanent scar of the drought.
@@ -789,6 +1012,8 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
     vitality = _clamp01(moisture)
     extension_chance = vitality * EXTENSION_RATE
     capacity = _capacity(genome)
+    branch_multiplier = _branch_multiplier(breadth)
+    jitter_multiplier = _jitter_multiplier(rhythm)
     parched = vitality < DIEBACK_MOISTURE_THRESHOLD
     nodes = list(structure.nodes)
     active_tips = list(structure.active_tips)
@@ -802,7 +1027,15 @@ def grow(structure: Structure, genome: Genome, moisture: float, steps: int) -> S
             active_tips = [tid for tid in active_tips if nodes[tid].state is NodeState.TIP]
         else:
             active_tips = _growth_step(
-                nodes, genome, structure.seed, extension_chance, capacity, step_index, active_tips
+                nodes,
+                genome,
+                structure.seed,
+                extension_chance,
+                capacity,
+                step_index,
+                active_tips,
+                branch_multiplier,
+                jitter_multiplier,
             )
         stats = _milestone_step(stats, len(nodes), vitality)
         step_index += 1

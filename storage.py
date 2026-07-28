@@ -11,6 +11,22 @@ The body is stored as JSON produced by :func:`structure.serialize` (carrying the
 lineage — generation and parent seed — inside it). The ``seed``, ``step_count``
 and ``generation`` columns mirror values inside that blob for easy inspection;
 the blob is authoritative on load.
+
+A second table, ``author_presence``, holds one row per ``(guild_id, author_id)``
+seen recently: a presence weight and the time it was last touched, on the same
+lazy-decay pattern as the guild's own moisture. It feeds :func:`structure.
+author_breadth` and is wiped for a guild when its plant dies and a successor
+germinates, mirroring how :class:`structure.LifeStats` resets on rebirth — a new
+generation earns its own crowd from scratch rather than inheriting its
+predecessor's voices.
+
+A third table, ``daily_activity``, holds one row per ``(guild_id, day_bucket)``
+with the raw message count that calendar day. It feeds :func:`structure.
+temporal_rhythm` and, unlike ``author_presence``, is *not* wiped when a
+successor germinates: rhythm reads a community's own day-to-day cadence, not an
+individual plant's biography, so it is never reset by a death it has nothing to
+do with. It is only ever pruned back to the rolling window
+:func:`structure.temporal_rhythm` reads (see ``prune_daily_activity``).
 """
 
 from __future__ import annotations
@@ -105,6 +121,27 @@ class Storage:
             self._connection.execute(
                 "ALTER TABLE plant_state ADD COLUMN channel_unreachable_since REAL"
             )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS author_presence (
+                guild_id   INTEGER NOT NULL,
+                author_id  INTEGER NOT NULL,
+                weight     REAL    NOT NULL,
+                last_seen  REAL    NOT NULL,
+                PRIMARY KEY (guild_id, author_id)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_activity (
+                guild_id   INTEGER NOT NULL,
+                day_bucket INTEGER NOT NULL,
+                count      INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, day_bucket)
+            )
+            """
+        )
         self._connection.commit()
 
     def load_all(self) -> dict[int, GuildState]:
@@ -184,6 +221,119 @@ class Storage:
                 "moisture": state.moisture,
                 "last_update": state.last_update,
             },
+        )
+        self._connection.commit()
+
+    def load_all_author_presence(self) -> dict[int, dict[int, tuple[float, float]]]:
+        """Load every guild's recorded author-presence weights, keyed by guild then author.
+
+        Values are raw, undecayed ``(weight, last_seen)`` pairs — the caller
+        (``bot.py``) decays each to the current moment on read, exactly like
+        :attr:`GuildState.moisture` is decayed lazily rather than on write.
+        """
+        rows = self._connection.execute(
+            "SELECT guild_id, author_id, weight, last_seen FROM author_presence"
+        ).fetchall()
+        result: dict[int, dict[int, tuple[float, float]]] = {}
+        for row in rows:
+            result.setdefault(row["guild_id"], {})[row["author_id"]] = (
+                row["weight"],
+                row["last_seen"],
+            )
+        return result
+
+    def upsert_author_presence(
+        self, guild_id: int, author_id: int, weight: float, last_seen: float
+    ) -> None:
+        """Insert or update one author's presence weight and commit immediately.
+
+        Called on every watering (like :meth:`save_moisture`), so this touches
+        exactly one row rather than the guild's whole state.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO author_presence (guild_id, author_id, weight, last_seen)
+            VALUES (:guild_id, :author_id, :weight, :last_seen)
+            ON CONFLICT(guild_id, author_id) DO UPDATE SET
+                weight    = excluded.weight,
+                last_seen = excluded.last_seen
+            """,
+            {
+                "guild_id": guild_id,
+                "author_id": author_id,
+                "weight": weight,
+                "last_seen": last_seen,
+            },
+        )
+        self._connection.commit()
+
+    def delete_author_presence(self, guild_id: int, author_ids: list[int]) -> None:
+        """Delete specific authors' presence rows — their weight has decayed to nothing.
+
+        Run once per metabolic tick to keep the table bounded to genuinely
+        still-relevant recent voices, rather than growing with every person who
+        has ever posted once.
+        """
+        if not author_ids:
+            return
+        self._connection.executemany(
+            "DELETE FROM author_presence WHERE guild_id = ? AND author_id = ?",
+            [(guild_id, author_id) for author_id in author_ids],
+        )
+        self._connection.commit()
+
+    def clear_author_presence(self, guild_id: int) -> None:
+        """Delete every presence row for a guild — a fresh generation starts unheard.
+
+        Called when a dead plant's successor germinates: like
+        :class:`structure.LifeStats`, breadth is this life's own accumulated
+        crowd, not the lineage's.
+        """
+        self._connection.execute("DELETE FROM author_presence WHERE guild_id = ?", (guild_id,))
+        self._connection.commit()
+
+    def load_all_daily_activity(self) -> dict[int, dict[int, int]]:
+        """Load every guild's recorded daily message counts, keyed by guild then day bucket.
+
+        Feeds :func:`structure.temporal_rhythm`. Deliberately not cleared on a
+        successor's germination (unlike :meth:`clear_author_presence`) — see the
+        module docstring.
+        """
+        rows = self._connection.execute(
+            "SELECT guild_id, day_bucket, count FROM daily_activity"
+        ).fetchall()
+        result: dict[int, dict[int, int]] = {}
+        for row in rows:
+            result.setdefault(row["guild_id"], {})[row["day_bucket"]] = row["count"]
+        return result
+
+    def increment_daily_activity(self, guild_id: int, day_bucket: int) -> None:
+        """Count one more message toward a guild's calendar-day total and commit.
+
+        Called on every watering (like :meth:`upsert_author_presence`), so this
+        touches exactly one row rather than the guild's whole state.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO daily_activity (guild_id, day_bucket, count)
+            VALUES (:guild_id, :day_bucket, 1)
+            ON CONFLICT(guild_id, day_bucket) DO UPDATE SET
+                count = count + 1
+            """,
+            {"guild_id": guild_id, "day_bucket": day_bucket},
+        )
+        self._connection.commit()
+
+    def prune_daily_activity(self, guild_id: int, oldest_kept_bucket: int) -> None:
+        """Delete a guild's day buckets older than :func:`structure.temporal_rhythm`'s window.
+
+        Run once per metabolic tick (mirroring :meth:`delete_author_presence`) so
+        the table stays bounded to the rolling window rather than growing for as
+        long as the guild has had a plant.
+        """
+        self._connection.execute(
+            "DELETE FROM daily_activity WHERE guild_id = ? AND day_bucket < ?",
+            (guild_id, oldest_kept_bucket),
         )
         self._connection.commit()
 

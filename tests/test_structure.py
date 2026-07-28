@@ -17,12 +17,14 @@ from structure import (
     BLOOM_MIN_NODES,
     BLOOM_VITALITY,
     BLOOM_WILT_VITALITY,
+    BREADTH_SATURATION_VOICES,
     EPIPHYTE_MIN_AGE,
     EPIPHYTE_MIN_BLOOMS,
     EPIPHYTE_MIN_NODES,
     SEED_BLOOM_STEPS,
     LifeStats,
     NodeState,
+    author_breadth,
     can_host_epiphyte,
     epiphyte_genome,
     genome_from_seed,
@@ -49,6 +51,13 @@ def _children(structure) -> dict[int, list[int]]:
         if node.parent_id is not None:
             kids.setdefault(node.parent_id, []).append(node.id)
     return kids
+
+
+def _mean_angle_deviation(structure) -> float:
+    """Average how far each non-germ node's angle wandered from its limb's own
+    bearing — the exact quantity rhythm's jitter multiplier scales."""
+    diffs = [abs(n.angle - n.axis_angle) for n in structure.nodes if n.parent_id is not None]
+    return sum(diffs) / len(diffs)
 
 
 def _grown(seed: int, moisture: float, steps: int):
@@ -578,3 +587,158 @@ def test_growth_output_is_unchanged_by_the_active_tips_cache() -> None:
     large = grow(_epiphyte_ready(), genome, TENDED, 100)
     assert large.epiphyte is not None, "the large fixture should have settled an epiphyte"
     assert _hash(large) == "9e30ac2520d2946b4e9de0f637601bd4f7dfbd8bfa625b7f78522d7bc7569e48"
+
+
+# --- Phase 11: author breadth (crown branching) ------------------------------
+
+
+def test_author_breadth_with_no_recent_voices_is_zero() -> None:
+    assert author_breadth([]) == 0.0
+    assert author_breadth([0.0, 0.0]) == 0.0
+
+
+def test_author_breadth_ignores_authors_below_the_presence_floor() -> None:
+    """A weight just short of the floor does not count as an active voice."""
+    from structure import AUTHOR_PRESENCE_FLOOR
+
+    assert author_breadth([AUTHOR_PRESENCE_FLOOR - 0.01] * 5) == 0.0
+
+
+def test_author_breadth_counts_voices_at_or_above_the_floor() -> None:
+    from structure import AUTHOR_PRESENCE_FLOOR
+
+    weights = [AUTHOR_PRESENCE_FLOOR, AUTHOR_PRESENCE_FLOOR, 0.0, 0.05]
+    assert author_breadth(weights) == 2 / BREADTH_SATURATION_VOICES
+
+
+def test_author_breadth_saturates_at_the_configured_voice_count() -> None:
+    at_saturation = author_breadth([1.0] * BREADTH_SATURATION_VOICES)
+    beyond_saturation = author_breadth([1.0] * (BREADTH_SATURATION_VOICES + 10))
+    assert at_saturation == 1.0
+    assert beyond_saturation == 1.0
+
+
+def test_grow_without_breadth_matches_the_explicit_neutral_value() -> None:
+    """grow()'s default reproduces the exact pre-Phase-11 growth: neutral breadth."""
+    structure = germinate(7)
+    genome = genome_from_seed(7)
+    without_breadth = grow(structure, genome, 0.9, 200)
+    with_neutral_breadth = grow(structure, genome, 0.9, 200, 0.5)
+    assert serialize(without_breadth) == serialize(with_neutral_breadth)
+
+
+def test_higher_breadth_grows_a_wider_more_branched_crown() -> None:
+    """Same seed, moisture and steps; only breadth differs.
+
+    A many-voiced channel (breadth 1.0) should end up with a larger share of its
+    body off the main axis (order >= 1) than a single-dominant-voice channel
+    (breadth 0.0) — breadth only reshapes how bushy the crown is, checked here
+    across several seeds so the effect isn't an artefact of one seed's draws.
+    """
+    for seed in (1, 2, 3, 42, 99, 123):
+        structure = germinate(seed)
+        genome = genome_from_seed(seed)
+        narrow = grow(structure, genome, 0.9, 300, 0.0)
+        wide = grow(structure, genome, 0.9, 300, 1.0)
+
+        narrow_branch_share = sum(1 for n in narrow.nodes if n.order >= 1) / len(narrow.nodes)
+        wide_branch_share = sum(1 for n in wide.nodes if n.order >= 1) / len(wide.nodes)
+
+        assert wide_branch_share > narrow_branch_share, f"seed {seed}"
+
+
+def test_breadth_does_not_change_the_genome_or_moisture_gate() -> None:
+    """Breadth only touches branching: a fully parched plant still only diebacks,
+    regardless of how many voices are active."""
+    structure = germinate(5)
+    genome = genome_from_seed(5)
+    parched_narrow = grow(structure, genome, 0.0, 20, 0.0)
+    parched_wide = grow(structure, genome, 0.0, 20, 1.0)
+    assert serialize(parched_narrow) == serialize(parched_wide)
+
+
+# --- Phase 12: temporal rhythm (growth shape / symmetry) ---------------------
+
+
+def test_grow_without_rhythm_matches_the_explicit_neutral_value() -> None:
+    """grow()'s default reproduces the exact pre-Phase-12 growth: neutral rhythm."""
+    structure = germinate(7)
+    genome = genome_from_seed(7)
+    without_rhythm = grow(structure, genome, 0.9, 200)
+    with_neutral_rhythm = grow(structure, genome, 0.9, 200, 0.5, 0.5)
+    assert serialize(without_rhythm) == serialize(with_neutral_rhythm)
+
+
+def test_lower_rhythm_grows_a_more_irregular_less_symmetric_body() -> None:
+    """Same seed, moisture and steps; only rhythm differs.
+
+    A bursty channel (rhythm 0.0) should end up with a larger average angular
+    deviation from each limb's own bearing than a steady channel (rhythm 1.0)
+    — rhythm only reshapes how gnarled the body looks, checked here across
+    several seeds so the effect isn't an artefact of one seed's draws.
+    """
+    for seed in (1, 2, 3, 42, 99, 123):
+        structure = germinate(seed)
+        genome = genome_from_seed(seed)
+        steady = grow(structure, genome, 0.9, 300, 0.5, 1.0)
+        bursty = grow(structure, genome, 0.9, 300, 0.5, 0.0)
+
+        assert _mean_angle_deviation(bursty) > _mean_angle_deviation(steady), f"seed {seed}"
+
+
+def test_rhythm_does_not_change_the_genome_or_moisture_gate() -> None:
+    """Rhythm only touches angle noise: a fully parched plant still only diebacks,
+    regardless of how steady or bursty its activity was."""
+    structure = germinate(5)
+    genome = genome_from_seed(5)
+    parched_steady = grow(structure, genome, 0.0, 20, 0.5, 1.0)
+    parched_bursty = grow(structure, genome, 0.0, 20, 0.5, 0.0)
+    assert serialize(parched_steady) == serialize(parched_bursty)
+
+
+def test_rhythm_and_breadth_modifiers_do_not_interfere() -> None:
+    """High breadth + bursty rhythm vs. low breadth + steady rhythm, and every
+    combination in between: branching and angle noise stay legible and
+    independent, not entangled by a shared random draw.
+
+    Branch topology (which nodes exist, and each one's branch order) is exactly
+    unaffected by rhythm at fixed breadth: ``random.uniform`` consumes exactly
+    one draw from a tip's own independently-seeded RNG regardless of how wide a
+    range it draws within, so scaling that range (what rhythm does) never shifts
+    any later branch-or-not decision in the same stream.
+    """
+    seed = 77
+    structure = germinate(seed)
+    genome = genome_from_seed(seed)
+
+    low_breadth_steady = grow(structure, genome, 0.9, 250, 0.0, 1.0)
+    low_breadth_bursty = grow(structure, genome, 0.9, 250, 0.0, 0.0)
+    high_breadth_steady = grow(structure, genome, 0.9, 250, 1.0, 1.0)
+    high_breadth_bursty = grow(structure, genome, 0.9, 250, 1.0, 0.0)
+
+    def topology(struct):
+        return [(n.id, n.parent_id, n.order) for n in struct.nodes]
+
+    # Exact: rhythm never changes which nodes exist or how they branch.
+    assert topology(low_breadth_steady) == topology(low_breadth_bursty)
+    assert topology(high_breadth_steady) == topology(high_breadth_bursty)
+
+    # Breadth still drives branching as before, at either rhythm extreme.
+    def branch_share(struct):
+        return sum(1 for n in struct.nodes if n.order >= 1) / len(struct.nodes)
+
+    assert branch_share(high_breadth_steady) > branch_share(low_breadth_steady)
+    assert branch_share(high_breadth_bursty) > branch_share(low_breadth_bursty)
+
+    # Rhythm still drives angle deviation as before, at either breadth extreme.
+    assert _mean_angle_deviation(low_breadth_bursty) > _mean_angle_deviation(low_breadth_steady)
+    assert _mean_angle_deviation(high_breadth_bursty) > _mean_angle_deviation(high_breadth_steady)
+
+    # And breadth's crosstalk into angle deviation is small next to rhythm's own
+    # swing: changing breadth alone should move this metric far less than
+    # changing rhythm alone does.
+    rhythm_swing = _mean_angle_deviation(low_breadth_bursty) - _mean_angle_deviation(low_breadth_steady)
+    breadth_crosstalk = abs(
+        _mean_angle_deviation(high_breadth_steady) - _mean_angle_deviation(low_breadth_steady)
+    )
+    assert breadth_crosstalk < rhythm_swing
