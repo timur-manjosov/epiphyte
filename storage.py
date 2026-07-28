@@ -35,6 +35,20 @@ ever surfaces once, sampled at the moment a bloom already earned by Phase 9's
 own gate begins (see :func:`structure._bloom_intensity`), and is wiped on the
 same rebirth as ``author_presence``: like breadth, a new generation's social
 warmth is this life's own to earn, not its predecessor's.
+
+A fifth table, ``thread_activity``, holds one row per ``(guild_id, thread_id,
+author_id)`` with that author's message count in that thread and the Unix
+timestamps of their first and most recent message there. Unlike
+``author_presence``/``reactor_presence`` it carries no decayed weight — a
+thread's whole short life is a handful of rows, not a value that needs to fade
+continuously over weeks — and the caller (``bot.py``) aggregates a thread's
+rows into the counts and span :func:`structure.thread_qualifies` reads. Like
+``daily_activity`` and unlike the two presence tables, it is *not* wiped when a
+successor germinates: which of a channel's conversations spin off into
+sustained threads is a trait of the community's habits, not any one plant's
+biography, so a successor's crown may nest as deeply from its very first tick
+as its predecessor's did. It is only ever pruned back to threads still within
+:data:`structure.THREAD_RECENCY_SECONDS` of now (see ``prune_thread_activity``).
 """
 
 from __future__ import annotations
@@ -158,6 +172,19 @@ class Storage:
                 weight     REAL    NOT NULL,
                 last_seen  REAL    NOT NULL,
                 PRIMARY KEY (guild_id, reactor_id)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS thread_activity (
+                guild_id      INTEGER NOT NULL,
+                thread_id     INTEGER NOT NULL,
+                author_id     INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                first_seen    REAL    NOT NULL,
+                last_seen     REAL    NOT NULL,
+                PRIMARY KEY (guild_id, thread_id, author_id)
             )
             """
         )
@@ -417,6 +444,87 @@ class Storage:
         self._connection.execute(
             "DELETE FROM daily_activity WHERE guild_id = ? AND day_bucket < ?",
             (guild_id, oldest_kept_bucket),
+        )
+        self._connection.commit()
+
+    def load_all_thread_activity(self) -> dict[int, dict[int, dict[int, tuple[int, float, float]]]]:
+        """Load every guild's recorded thread activity, keyed by guild, then thread, then author.
+
+        Values are ``(message_count, first_seen, last_seen)`` triples — see the
+        module docstring. The caller (``bot.py``) aggregates a thread's rows
+        into what :func:`structure.thread_qualifies` needs.
+        """
+        rows = self._connection.execute(
+            "SELECT guild_id, thread_id, author_id, message_count, first_seen, last_seen "
+            "FROM thread_activity"
+        ).fetchall()
+        result: dict[int, dict[int, dict[int, tuple[int, float, float]]]] = {}
+        for row in rows:
+            guild_threads = result.setdefault(row["guild_id"], {})
+            guild_threads.setdefault(row["thread_id"], {})[row["author_id"]] = (
+                row["message_count"],
+                row["first_seen"],
+                row["last_seen"],
+            )
+        return result
+
+    def upsert_thread_activity(
+        self, guild_id: int, thread_id: int, author_id: int, now: float, increment: bool
+    ) -> None:
+        """Record one author's activity in one thread and commit immediately.
+
+        ``increment`` is ``True`` for an actual message (advances
+        ``message_count`` by one, mirroring :meth:`increment_daily_activity`)
+        and ``False`` for a thread's creation instant (see ``bot.py``'s
+        ``on_thread_create``): the owner is registered with zero messages so
+        far, anchoring ``first_seen`` at the thread's actual birth rather than
+        its first tracked message, without yet counting toward
+        :data:`structure.THREAD_MIN_MESSAGES_PER_PARTICIPANT` on its own.
+        ``last_seen`` always advances to ``now``, and an existing row's
+        ``first_seen`` is never overwritten — a row is only ever created once,
+        at whichever of the two events reaches this author first.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO thread_activity (
+                guild_id, thread_id, author_id, message_count, first_seen, last_seen
+            )
+            VALUES (:guild_id, :thread_id, :author_id, :initial_count, :now, :now)
+            ON CONFLICT(guild_id, thread_id, author_id) DO UPDATE SET
+                message_count = message_count + :increment_amount,
+                last_seen     = :now
+            """,
+            {
+                "guild_id": guild_id,
+                "thread_id": thread_id,
+                "author_id": author_id,
+                "initial_count": 1 if increment else 0,
+                "increment_amount": 1 if increment else 0,
+                "now": now,
+            },
+        )
+        self._connection.commit()
+
+    def prune_thread_activity(self, guild_id: int, oldest_kept: float) -> None:
+        """Delete a guild's thread rows whose thread has had no message since ``oldest_kept``.
+
+        A whole thread is dropped only once every one of its rows is stale —
+        deleting one lagging participant's row while the thread is still live
+        elsewhere would silently disqualify it. Run once per metabolic tick
+        (mirroring :meth:`prune_daily_activity`) so the table stays bounded to
+        genuinely still-relevant recent threads.
+        """
+        self._connection.execute(
+            """
+            DELETE FROM thread_activity
+            WHERE guild_id = ? AND thread_id IN (
+                SELECT thread_id FROM thread_activity
+                WHERE guild_id = ?
+                GROUP BY thread_id
+                HAVING MAX(last_seen) < ?
+            )
+            """,
+            (guild_id, guild_id, oldest_kept),
         )
         self._connection.commit()
 

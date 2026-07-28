@@ -34,6 +34,17 @@ step a bloom already earned by Phase 9's gate begins, becoming that bloom's
 fixed vividness for its whole duration. It is never a second gate on bloom
 itself, and it never touches growth, branching or moisture.
 
+Phase 16 adds a fourth: threads. ``on_message`` also records activity in any
+thread it fires for, and ``on_thread_create`` records a thread's creation
+instant and owner — both standard, non-privileged events, no new intent.
+``_guild_thread_depth`` aggregates that per-thread activity into how many
+currently-live threads clear ``structure.thread_qualifies`` (genuinely
+multi-participant, not a burst, not a monologue) and hands the resulting
+``structure.thread_depth`` reading into every tick's growth step alongside
+breadth and rhythm — a channel whose conversations regularly spin off into
+sustained threads grows a more deeply nested branch structure than one whose
+activity stays flat, at the same size and the same crown width.
+
 Everything the plant says about itself, it says in the first person: the living
 message's heading and text are spoken by ``voice``, which reads them from the
 body and the moisture. Where those words land — the accent colour, which
@@ -312,6 +323,13 @@ class EpiphyteClient(discord.Client):
         #: ``self._windows`` (message watering) since reacting and posting are
         #: separate actions with their own anti-farming curves.
         self._reaction_windows: dict[tuple[int, int], WateringWindow] = {}
+        #: Per guild, per thread, per author: (message count, first_seen,
+        #: last_seen). Feeds ``structure.thread_depth`` via
+        #: ``_guild_thread_depth``; see ``_record_thread_activity``. Carries no
+        #: decayed weight, unlike ``self._author_presence`` — a thread's short
+        #: life is plain counts and timestamps, not a value that fades over
+        #: weeks (see storage.py's module docstring).
+        self._thread_activity: dict[int, dict[int, dict[int, tuple[int, float, float]]]] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
@@ -330,6 +348,7 @@ class EpiphyteClient(discord.Client):
         self._author_presence = self._storage.load_all_author_presence()
         self._daily_activity = self._storage.load_all_daily_activity()
         self._reactor_presence = self._storage.load_all_reactor_presence()
+        self._thread_activity = self._storage.load_all_thread_activity()
 
         guild_id = os.getenv(GUILD_ENV)
         if guild_id:
@@ -627,6 +646,66 @@ class EpiphyteClient(discord.Client):
         counts = [guild_days.get(bucket, 0) for bucket in range(window_start, today + 1)]
         return structure.temporal_rhythm(counts)
 
+    async def _record_thread_activity(
+        self, guild_id: int, thread_id: int, author_id: int, now: float, increment: bool
+    ) -> None:
+        """Record one author's activity in one thread, feeding thread depth.
+
+        Mirrors :meth:`_water_author_presence`'s cache-then-persist shape, but
+        carries no decayed weight — see storage.py's module docstring for why a
+        thread's short life is tracked as plain counts and timestamps instead.
+        ``increment`` distinguishes an actual message (called from
+        :meth:`on_message`) from a thread's creation instant (called from
+        :meth:`on_thread_create`); either way ``last_seen`` advances to ``now``
+        and an existing row's ``first_seen`` is preserved, so a row's span
+        always starts at whichever of the two events reached this author first.
+        """
+        guild_threads = self._thread_activity.setdefault(guild_id, {})
+        thread_rows = guild_threads.setdefault(thread_id, {})
+        count, first_seen, _ = thread_rows.get(author_id, (0, now, now))
+        thread_rows[author_id] = (count + (1 if increment else 0), first_seen, now)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(
+                    self._storage.upsert_thread_activity, guild_id, thread_id, author_id, now, increment
+                )
+
+    async def _guild_thread_depth(self, guild_id: int, now: float) -> float:
+        """Aggregate this guild's recorded thread activity into its thread-depth score.
+
+        Groups the per-(thread, author) rows this guild has accumulated by
+        thread, drops threads that have gone fully stale (no message from
+        anyone within :data:`structure.THREAD_RECENCY_SECONDS` of ``now`` —
+        mirroring :meth:`_guild_author_breadth`'s and :meth:`_guild_rhythm`'s
+        own per-tick pruning), and counts how many of the threads left clear
+        :func:`structure.thread_qualifies`. Every thread left after pruning is,
+        by construction, still within the recency window, so only whether it
+        ever qualified remains to check.
+        """
+        guild_threads = self._thread_activity.get(guild_id, {})
+        cutoff = now - structure.THREAD_RECENCY_SECONDS
+        stale_threads = [
+            thread_id
+            for thread_id, rows in guild_threads.items()
+            if max(last_seen for _, _, last_seen in rows.values()) < cutoff
+        ]
+        for thread_id in stale_threads:
+            del guild_threads[thread_id]
+        if stale_threads and self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.prune_thread_activity, guild_id, cutoff)
+
+        qualifying = sum(
+            1
+            for rows in guild_threads.values()
+            if structure.thread_qualifies(
+                [count for count, _, _ in rows.values()],
+                min(first_seen for _, first_seen, _ in rows.values()),
+                max(last_seen for _, _, last_seen in rows.values()),
+            )
+        )
+        return structure.thread_depth(qualifying)
+
     async def _clear_author_presence(self, guild_id: int) -> None:
         """Wipe a guild's recorded voices when its successor germinates.
 
@@ -682,19 +761,20 @@ class EpiphyteClient(discord.Client):
         """Advance one guild's plant by a single life-step (the tick's core).
 
         Decays moisture to ``now``, then either grows the plant one step (gated by
-        that moisture and, for its shape, by the guild's current author breadth
-        and temporal rhythm — see :meth:`_guild_author_breadth` and
-        :meth:`_guild_rhythm`), or — if it is dead — counts down a brief dead
-        phase and germinates a mutated successor when it elapses, wiping the
-        recorded voices (and reactors) along with it. The recorded daily activity
-        behind rhythm is deliberately *not* wiped on rebirth — see ``storage.py``'s
-        module docstring. The guild's current reaction warmth
-        (:meth:`_guild_reaction_warmth`) is also passed into every growth step,
-        but — unlike breadth and rhythm — it shapes nothing about growth itself;
-        :func:`structure.grow` only ever samples it on the one step a bloom
-        begins. All the growth, death and heredity is the pure logic in
-        :mod:`structure`; this only reads the clock, runs the small state machine
-        and stores the result.
+        that moisture and, for its shape, by the guild's current author breadth,
+        temporal rhythm and thread depth — see :meth:`_guild_author_breadth`,
+        :meth:`_guild_rhythm` and :meth:`_guild_thread_depth`), or — if it is
+        dead — counts down a brief dead phase and germinates a mutated successor
+        when it elapses, wiping the recorded voices (and reactors) along with it.
+        The recorded daily activity behind rhythm, and the recorded thread
+        activity behind thread depth, are deliberately *not* wiped on rebirth —
+        see ``storage.py``'s module docstring. The guild's current reaction
+        warmth (:meth:`_guild_reaction_warmth`) is also passed into every growth
+        step, but — unlike breadth, rhythm and thread depth — it shapes nothing
+        about growth itself; :func:`structure.grow` only ever samples it on the
+        one step a bloom begins. All the growth, death and heredity is the pure
+        logic in :mod:`structure`; this only reads the clock, runs the small
+        state machine and stores the result.
         """
         state = self._states[guild_id]
         current = moisture.decay(state.moisture, now - state.last_update)
@@ -718,7 +798,10 @@ class EpiphyteClient(discord.Client):
         breadth = await self._guild_author_breadth(guild_id, now)
         rhythm = await self._guild_rhythm(guild_id, now)
         reaction_warmth = await self._guild_reaction_warmth(guild_id, now)
-        grown = structure.grow(state.structure, genome, current, 1, breadth, rhythm, reaction_warmth)
+        thread_depth = await self._guild_thread_depth(guild_id, now)
+        grown = structure.grow(
+            state.structure, genome, current, 1, breadth, rhythm, reaction_warmth, thread_depth
+        )
         await self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
 
     async def on_message(self, message: discord.Message) -> None:
@@ -728,7 +811,10 @@ class EpiphyteClient(discord.Client):
         yet germinated a plant (no ``/epiphyte-channel`` call). Once a plant
         exists, every channel in the guild counts, not just the one the living
         message is displayed in. Only the fact that a message arrived matters —
-        never its content.
+        never its content. If the message landed in a thread, it also feeds
+        that thread's activity toward thread depth (see
+        :meth:`_record_thread_activity`) — a standard, non-privileged event
+        already covered by the same intents watering itself uses.
         """
         if message.author == self.user:
             return
@@ -737,7 +823,35 @@ class EpiphyteClient(discord.Client):
         state = self.state(message.guild.id)
         if state is None or state.channel_id is None:
             return
-        await self.water_plant(message.guild.id, message.author.id, time.time())
+        now = time.time()
+        await self.water_plant(message.guild.id, message.author.id, now)
+        if isinstance(message.channel, discord.Thread):
+            await self._record_thread_activity(
+                message.guild.id, message.channel.id, message.author.id, now, increment=True
+            )
+
+    async def on_thread_create(self, thread: discord.Thread) -> None:
+        """Register a new thread's creation instant and owner, feeding thread depth.
+
+        Threads are a standard, non-privileged gateway event — no new intent.
+        Recording the creation moment (rather than only the first tracked
+        message) anchors :data:`structure.THREAD_MIN_SPAN_SECONDS` to the
+        thread's actual lifespan: a thread that sits open and silent for a
+        while before anyone replies does not get a falsely short span just
+        because its first *message* landed late. The owner is recorded with
+        zero messages so far — see :func:`structure.thread_qualifies`, an
+        entry below :data:`structure.THREAD_MIN_MESSAGES_PER_PARTICIPANT`
+        never counts toward the participant bar on its own, so this alone can
+        never qualify a thread.
+        """
+        if thread.owner_id is None:
+            return
+        state = self.state(thread.guild.id)
+        if state is None or state.channel_id is None:
+            return
+        await self._record_thread_activity(
+            thread.guild.id, thread.id, thread.owner_id, time.time(), increment=False
+        )
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         """Credit a genuine reaction toward the guild's reaction-warmth reading.

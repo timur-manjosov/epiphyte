@@ -304,6 +304,53 @@ angelegt.
   `_BLOOM_MODEST`) statt eines geteilten mit eingesetzten Werten. Reagieren
   während einer bereits offenen Blüte ändert deren Intensität nicht mehr — es
   gibt absichtlich keinen laufenden, taktweise beobachtbaren Wert.
+- **Phase 16 — Threads (Verzweigungstiefe) ✓:** vierte Vitalitätsdimension,
+  und wieder ein anderer Hebel als alle drei davor: `structure.
+  _depth_exponent` skaliert, wie stark die Verzweigungswahrscheinlichkeit mit
+  der Verzweigungsordnung abklingt (`BRANCH_ORDER_DECAY ** (order *
+  depth_exponent)` in `grow()`), statt wie `author_breadth` die Chance an
+  jeder Ordnung gleichermaßen zu skalieren (Breite) oder wie `temporal_rhythm`
+  das Winkelrauschen zu skalieren (Symmetrie). Bei `order == 0` (dem Stamm)
+  hat Threads-Tiefe dadurch grundsätzlich keine Wirkung — ein Discord-Thread
+  ist strukturell ein Gespräch, das vom Stamm abzweigt und eine Weile ein
+  eigenes Leben führt, also genau das, was ein sich selbst weiter
+  verzweigender Seitenast auch ist. `structure.thread_qualifies` lässt einen
+  Thread nur zählen, wenn mindestens `THREAD_MIN_PARTICIPANTS` unterschiedliche
+  Personen je mindestens `THREAD_MIN_MESSAGES_PER_PARTICIPANT` Nachrichten
+  darin geschrieben haben und die Spanne zwischen erster und letzter
+  Nachricht mindestens `THREAD_MIN_SPAN_SECONDS` beträgt — eine einzelne
+  zusätzliche Nachricht eines sonst stillen Zweitaccounts genügt also nicht,
+  und ein im selben Moment geposteter Schwall auch nicht. `structure.
+  thread_depth` zählt, wie viele so qualifizierte Threads gerade noch
+  innerhalb von `THREAD_RECENCY_SECONDS` aktiv waren, und sättigt bei
+  `THREAD_DEPTH_SATURATION_THREADS` — bewusst weit unter
+  `BREADTH_SATURATION_VOICES`, damit ein kleiner, aber wirklich
+  Thread-lastiger Server nicht an einer für viel größere Server bemessenen
+  Kopfzahl scheitert. Anders als Autorenbreite ist der neutrale Startwert
+  (`NEUTRAL_THREAD_DEPTH`) keine Bestrafung, sondern der Normalfall: die
+  allermeisten Server nutzen Threads nie, und das darf nie dauerhaft gegen
+  sie ausgelegt werden — Tiefe bewegt sich daher ausschließlich von neutral
+  nach oben, nie darunter (mathematisch erzwungen: `_depth_exponent` liefert
+  bei `thread_depth <= NEUTRAL_THREAD_DEPTH` immer exakt `1.0`, also
+  `BRANCH_ORDER_DECAY`s unverändertes Vor-Phase-16-Verhalten). Die
+  zugrundeliegenden Rohdaten liegen in `storage.py`s neuer
+  `thread_activity`-Tabelle (`guild_id, thread_id, author_id` →
+  Nachrichtenzahl, erste und letzte Nachricht), gefüttert über `bot.py`s
+  `on_message` (für jede tatsächliche Nachricht in einem Thread) und
+  `on_thread_create` (verankert die Lebensspanne an der tatsächlichen
+  Thread-Erstellung statt erst an der ersten verfolgten Nachricht) — beides
+  Standard-Gateway-Events ohne jeden privilegierten Intent. Anders als
+  `author_presence`/`reactor_presence` trägt die Tabelle kein zerfallendes
+  Gewicht, sondern einfache Zähler und Zeitstempel: das kurze Leben eines
+  Threads ist eine andere Datenform als andauernde Präsenz, kein Grund, die
+  Zerfallsmaschinerie zweckzuentfremden. Bei Tod/Wiedergeburt wird
+  `thread_activity` **nicht** geleert — wie Rhythmus beschreibt es eine
+  Gewohnheit der Community, nicht die Biografie der einzelnen Pflanze; ein
+  Nachfolger darf vom ersten Takt an so tief verzweigen wie sein Vorgänger.
+  `voice.py` und `presentation.py` bleiben unverändert: wie Autorenbreite und
+  Rhythmus ist Threads-Tiefe ein stiller Form-Modifikator ohne eigenen
+  Zustand, den die Pflanze trägt oder ansagt — kein neuer Meilenstein wie
+  Blüte, also auch kein neuer Text-Pool und kein neues Embed-Feld.
 
 **Offen:**
 
@@ -312,8 +359,7 @@ angelegt.
   keine Zeit- oder Jahreszeit-Tönung.
 - **Weitere, noch unbenannte Phasen:** zusätzliche Vitalitätssignale (siehe
   „Zulassungstest für ein neues Vitalitätssignal" oben) und die botanischen
-  Dimensionen, die sie antreiben — z. B. Sprachaktivität, Threads,
-  Kanalbreite.
+  Dimensionen, die sie antreiben — z. B. Sprachaktivität, Kanalbreite.
 
 **Es gibt keinen definierten letzten Schritt.** Der Phasenplan bleibt bewusst
 offen; weitere Stufen dürfen entstehen, solange sie der Emergenz-These treu
@@ -330,8 +376,9 @@ epiphyte/
 ├── structure.py         # REINE LOGIK: akkumulierte Struktur, Genom (aus Seed), grow(),
 │                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte,
 │                        #   Autorenbreite (author_breadth), zeitlicher Rhythmus
-│                        #   (temporal_rhythm), Blütenintensität (_bloom_intensity)
-│                        #                                    [Phase 5–9, 11, 12, 15]
+│                        #   (temporal_rhythm), Blütenintensität (_bloom_intensity),
+│                        #   Threads-Verzweigungstiefe (thread_qualifies, thread_depth)
+│                        #                                [Phase 5–9, 11, 12, 15, 16]
 ├── voice.py             # REINE LOGIK: die Stimme der Pflanze — VoiceState, Text-Pools,
 │                        #   deterministische Auswahl (siehe Persona-Bibel)  [Phase 13, 15]
 ├── presentation.py      # REINE LOGIK: der Rahmen um die Pflanze — LifeEvent, Akzentfarbe,
@@ -340,7 +387,8 @@ epiphyte/
 ├── render.py            # Struktur → PNG via Pillow (gekapselte I/O)          [Phase 2, erweitert 5–9, 15]
 ├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
 │                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity,
-│                        #   reactor_presence                       [Phase 3, erweitert 5–9, 11, 12, 15]
+│                        #   reactor_presence, thread_activity
+│                        #                            [Phase 3, erweitert 5–9, 11, 12, 15, 16]
 ├── tests/               # pytest, ausschließlich für die reine Logik                    [ab Phase 1]
 ├── requirements.txt
 ├── requirements-dev.txt # pytest, reine Dev-Abhängigkeit, getrennt von der Laufzeit      [Phase 1]
@@ -376,8 +424,8 @@ Damit die Lücke zwischen These und Implementierung nicht in Prosa untergeht:
 | Autorenbreite (Anzahl verschiedener Stimmen) → Verzweigungsgrad der Krone | **live** (`structure.author_breadth`, `grow()`, Phase 11) |
 | Zeitlicher Rhythmus (Gleichmäßigkeit der Tagesaktivität) → Wuchsform/Symmetrie | **live** (`structure.temporal_rhythm`, `grow()`, Phase 12) |
 | Reaktionen (Breite der reagierenden Stimmen) → Blütenintensität | **live** (`structure._bloom_intensity`, `grow()`, Phase 15) |
+| Threads (qualifizierte, andauernde Nebengespräche) → Verzweigungstiefe | **live** (`structure.thread_depth`, `grow()`, Phase 16) |
 | Sprachaktivität (Voice) → eigene Dimension | entworfen, noch nicht gebaut |
-| Threads → eigene Dimension | entworfen, noch nicht gebaut |
 | Kanalbreite (wie viele verschiedene Kanäle aktiv sind) → eigene Dimension | entworfen, noch nicht gebaut |
 
 Jedes „entworfen, noch nicht gebaut"-Signal muss vor der Implementierung den

@@ -58,6 +58,18 @@ of its own.
   quiet all week, then a weekend spike — grows a more irregular, knotted one,
   at the same size and the same crown breadth. No amount of message volume can
   buy steadiness: only genuine spread across real days can.
+- **Threads become depth** — a conversation that spins off into its own thread
+  is, structurally, exactly what a side branch is: something that leaves the
+  main line and keeps developing on its own. A channel where that happens
+  regularly grows a more deeply nested branch structure than an equally
+  healthy, equally wide-crowned one whose activity stays flat in the main
+  channel — a separate knob again from who's talking or how evenly. A thread
+  only counts once it looks like a real, unfolding conversation: at least two
+  people, each posting more than once, spread over real time — a thread
+  someone opens and abandons, or pads with a single reply from a second
+  account, changes nothing. A server that has simply never used threads is
+  never penalised for it either; the shape only ever moves toward *more*
+  nested as genuine thread use accumulates.
 - **A body that remembers** — vitality and body are separate things. Leaves
   flush on the living tips when moisture is high and fall when it drops, and
   colour and posture follow the mood of the moment — but growth and death are
@@ -220,8 +232,8 @@ lives in the code or repository.
 ## Development
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`), the
-plant's genome, growth, dieback, lifecycle, milestones, author breadth and
-temporal rhythm (`structure.py`), everything it says about itself (`voice.py`),
+plant's genome, growth, dieback, lifecycle, milestones, author breadth,
+temporal rhythm and thread depth (`structure.py`), everything it says about itself (`voice.py`),
 and the shape and colour of the message it says it in (`presentation.py`) — is
 tested with pytest and depends on neither Discord nor Pillow. Rendering
 (`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated

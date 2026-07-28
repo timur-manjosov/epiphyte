@@ -61,6 +61,26 @@ occasionally, a bloom whose vividness reflects how broadly (not how loudly) the
 channel has been reacting over the same long window the health/maturity gate
 already reads. It never affects *whether* a bloom happens, never touches growth,
 branching or moisture, and a quiet-but-healthy channel still blooms, just modestly.
+
+Threads are a fourth signal, and — like breadth and rhythm — steer growth every
+step rather than sitting to one side like reaction warmth does. A Discord thread
+is, structurally, a conversation branching off the trunk and developing its own
+life for a while — close to a literal description of a side branch that itself
+branches further — so :func:`thread_depth` (read from qualifying threads the
+caller, ``bot.py``, currently counts as sustained via :func:`thread_qualifies`)
+scales how far branch probability persists into higher orders instead of
+quenching near the trunk (:func:`_depth_exponent`). This is deliberately a
+*different* knob from both of ``grow()``'s other structural modifiers: breadth's
+``branch_multiplier`` scales branch chance flatly at every order alike (crown
+*width*), rhythm's ``jitter_multiplier`` scales angle noise, and thread depth's
+``depth_exponent`` scales only how the per-order decay curve falls off (crown
+*depth* — how many generations of nesting a fork tends to keep producing). A
+channel whose conversations regularly spin off into sustained, multi-voice
+threads grows a more deeply nested branch structure than an equally healthy,
+equally wide-crowned one whose activity stays flat in the main channel. Unlike
+author breadth, a channel that has simply never used threads at all — the
+ordinary case for most servers — is never penalised for it: see
+:data:`NEUTRAL_THREAD_DEPTH`.
 """
 
 from __future__ import annotations
@@ -182,6 +202,75 @@ NEUTRAL_RHYTHM: float = 0.5
 #: NEUTRAL_RHYTHM — so a pre-Phase-12 call site is unaffected.
 RHYTHM_JITTER_MULTIPLIER_MIN: float = 0.6
 RHYTHM_JITTER_MULTIPLIER_MAX: float = 1.4
+
+# --- Thread-depth constants (how deeply, not just how often or how evenly) ---
+#
+# The fourth vitality dimension beyond message-count-driven growth: how much of
+# a channel's activity spins off into sustained, multi-voice threads, as opposed
+# to who is talking (breadth) or how evenly (rhythm). A thread is a conversation
+# branching off the trunk and developing its own life for a while — close to a
+# literal description of a side branch that itself branches further — so this
+# scales how far branch probability persists into higher orders rather than
+# breadth's flat per-order chance or rhythm's angle noise. Qualification
+# (:func:`thread_qualifies`) is deliberately its own, simpler shape of data than
+# author/reactor presence's decayed weights: a thread's whole short life is a
+# handful of rows, not a value that needs to fade continuously over weeks.
+
+#: A thread must be posted in by at least this many distinct people, each past
+#: :data:`THREAD_MIN_MESSAGES_PER_PARTICIPANT`, before it counts as a genuine
+#: side conversation rather than one person's monologue — the same headcount
+#: floor breadth and reaction warmth use against a lone actor, applied at the
+#: scale of a single thread instead of a whole channel. Deliberately far below
+#: :data:`BREADTH_SATURATION_VOICES`: depth rewards a *pattern* of thread use,
+#: not a second reading of channel-wide breadth, so a small server with only a
+#: handful of members can still earn it through genuine, real conversations.
+THREAD_MIN_PARTICIPANTS: int = 2
+#: Messages a participant must have posted in the thread to count toward
+#: :data:`THREAD_MIN_PARTICIPANTS`. Without this, a single extra message from
+#: an otherwise-silent second account would be enough to qualify a thread that
+#: is really still one person's monologue — the direct defence the admission
+#: test's naive-reaction-count example calls for, applied here.
+THREAD_MIN_MESSAGES_PER_PARTICIPANT: int = 2
+#: How long, in real seconds, a thread's first and most recent qualifying
+#: message must be apart before it counts. Filters out a burst posted within
+#: the same instant (a script, or a moment of copy-pasting from several
+#: accounts at once) while staying short enough that an ordinary, fast-moving
+#: real conversation — most genuine threads resolve within hours, not days —
+#: still clears it easily; calibrating this to breadth's week-long scale would
+#: wrongly demand a multi-day thread just to prove it is real.
+THREAD_MIN_SPAN_SECONDS: float = 30 * 60  # 30 minutes
+#: How long a qualifying thread's contribution is still counted after its last
+#: message, mirroring how a presence weight fades rather than cutting off the
+#: instant activity stops. The same order of magnitude as
+#: :data:`AUTHOR_PRESENCE_HALF_LIFE_SECONDS`, so a thread that wrapped up a few
+#: days ago still reads as recently alive, but one abandoned long ago does not.
+THREAD_RECENCY_SECONDS: float = 7 * 24 * 60 * 60  # 1 week
+#: Currently-live qualifying threads at which thread depth saturates (1.0).
+#: Three — far below :data:`BREADTH_SATURATION_VOICES`'s six, for the same
+#: reason :data:`THREAD_MIN_PARTICIPANTS` is: a genuinely thread-heavy small
+#: server should not be held to a bar sized for a much larger one.
+THREAD_DEPTH_SATURATION_THREADS: int = 3
+#: Depth score when there are no currently-qualifying threads at all — the
+#: default for the overwhelming majority of servers, which simply never use
+#: threads, an opt-in Discord feature many communities never touch. Unlike
+#: author breadth, where zero voices is a genuine, reliable extreme (a plant
+#: with any moisture always has at least one author), zero threads is the
+#: ordinary case and must never read as a permanent structural penalty — it is
+#: treated the way :func:`temporal_rhythm` treats too little history: an
+#: abstention, not a verdict. Thread depth therefore only ever moves *up* from
+#: here as real, sustained thread use accumulates; there is no symmetric
+#: "worse than never threading" reading, since nothing distinguishes that from
+#: simply not having used the feature yet. Also what ``grow()`` defaults to
+#: when a caller does not pass ``thread_depth`` at all, so a pre-Phase-16 call
+#: site is unaffected.
+NEUTRAL_THREAD_DEPTH: float = 0.5
+#: Floor the branch-order decay's exponent scales down to (see
+#: :func:`_depth_exponent`) as thread depth rises from
+#: :data:`NEUTRAL_THREAD_DEPTH` to ``1.0``. Below neutral the exponent is
+#: always exactly ``1.0`` — :data:`BRANCH_ORDER_DECAY` behaves precisely as it
+#: always did pre-Phase-16 — so this only ever lets deep branch structures
+#: persist to higher orders than the baseline, never quenches them faster.
+DEPTH_ORDER_EXPONENT_MIN: float = 0.55
 
 # --- Dieback constants (the body remembers drought) --------------------------
 #
@@ -713,6 +802,54 @@ def temporal_rhythm(daily_counts: Sequence[int]) -> float:
     return _clamp01(1.0 - gini)
 
 
+def thread_qualifies(
+    participant_message_counts: Iterable[int], first_message_at: float, last_message_at: float
+) -> bool:
+    """Whether one thread's accumulated activity is a genuine, sustained side
+    conversation rather than a monologue or an abandoned stub.
+
+    ``participant_message_counts`` is each distinct author's message count in
+    the thread; ``first_message_at``/``last_message_at`` are the Unix
+    timestamps of its first and most recent message (the caller, ``bot.py``,
+    anchors ``first_message_at`` at thread creation when it can — see
+    ``on_thread_create`` — so a thread that sat open and silent before anyone
+    replied is not judged by only the span since that late first reply).
+    Requires at least :data:`THREAD_MIN_PARTICIPANTS` distinct people who have
+    each posted at least :data:`THREAD_MIN_MESSAGES_PER_PARTICIPANT` times — a
+    single extra message from an otherwise-silent second account does not
+    qualify a thread — and a real span of at least
+    :data:`THREAD_MIN_SPAN_SECONDS` between its first and latest message, so a
+    burst posted within the same instant does not either. Pure: the caller
+    supplies whatever counts and timestamps it has accumulated; see also
+    :func:`thread_depth`, which reads how many currently-live threads clear
+    this bar.
+    """
+    engaged = sum(
+        1 for count in participant_message_counts if count >= THREAD_MIN_MESSAGES_PER_PARTICIPANT
+    )
+    if engaged < THREAD_MIN_PARTICIPANTS:
+        return False
+    return (last_message_at - first_message_at) >= THREAD_MIN_SPAN_SECONDS
+
+
+def thread_depth(qualifying_threads: int) -> float:
+    """Return how much of the channel's recent life branches into sustained,
+    multi-voice threads, in ``[``:data:`NEUTRAL_THREAD_DEPTH`` , 1.0]``.
+
+    ``qualifying_threads`` is how many threads the caller (``bot.py``, via
+    its own per-guild aggregation) currently counts as both having cleared
+    :func:`thread_qualifies` at some point in their life and still having had
+    a message within :data:`THREAD_RECENCY_SECONDS` of now. Saturates at
+    :data:`THREAD_DEPTH_SATURATION_THREADS`. Zero qualifying threads returns
+    the neutral default rather than an extreme — see
+    :data:`NEUTRAL_THREAD_DEPTH`'s docstring for why. Pure: no clock, no I/O.
+    """
+    if qualifying_threads <= 0:
+        return NEUTRAL_THREAD_DEPTH
+    saturation = _clamp01(qualifying_threads / THREAD_DEPTH_SATURATION_THREADS)
+    return NEUTRAL_THREAD_DEPTH + saturation * (1.0 - NEUTRAL_THREAD_DEPTH)
+
+
 def _jitter_multiplier(rhythm: float) -> float:
     """Scale factor temporal rhythm applies to a new internode's angle noise.
 
@@ -725,6 +862,28 @@ def _jitter_multiplier(rhythm: float) -> float:
     return RHYTHM_JITTER_MULTIPLIER_MAX - rhythm * (
         RHYTHM_JITTER_MULTIPLIER_MAX - RHYTHM_JITTER_MULTIPLIER_MIN
     )
+
+
+def _depth_exponent(thread_depth: float) -> float:
+    """Scale factor thread depth applies to the branch-order decay's exponent.
+
+    ``1.0`` — no effect at all, :data:`BRANCH_ORDER_DECAY`'s exact pre-Phase-16
+    behaviour — at and below :data:`NEUTRAL_THREAD_DEPTH` (see that constant's
+    docstring for why "no sustained thread activity" is never punished below
+    the ordinary baseline). Above neutral it falls linearly to
+    :data:`DEPTH_ORDER_EXPONENT_MIN` as ``thread_depth`` approaches ``1.0``, so
+    ``BRANCH_ORDER_DECAY ** (order * exponent)`` quenches branch chance more
+    slowly with every order of nesting — a deep branch structure persists to
+    higher orders instead of flattening out near the trunk. Applied only
+    through the exponent's *scale on order*, so at ``order == 0`` (the trunk)
+    it has no effect whatsoever — a different, independent knob from author
+    breadth's flat per-order :func:`_branch_multiplier`.
+    """
+    depth = _clamp01(thread_depth)
+    if depth <= NEUTRAL_THREAD_DEPTH:
+        return 1.0
+    spent = (depth - NEUTRAL_THREAD_DEPTH) / (1.0 - NEUTRAL_THREAD_DEPTH)
+    return 1.0 - spent * (1.0 - DEPTH_ORDER_EXPONENT_MIN)
 
 
 def _branch_multiplier(breadth: float) -> float:
@@ -748,6 +907,7 @@ def _grow_tip(
     terminate_chance: float,
     branch_multiplier: float,
     jitter_multiplier: float,
+    depth_exponent: float,
     rng: random.Random,
 ) -> list[int]:
     """Advance one active tip by one step, mutating the working ``nodes`` list.
@@ -762,6 +922,9 @@ def _grow_tip(
     rescanning the body for them. ``jitter_multiplier`` (see
     :func:`_jitter_multiplier`) scales every angle drawn this call — temporal
     rhythm's effect, applied independently of ``branch_multiplier``'s.
+    ``depth_exponent`` (see :func:`_depth_exponent`) scales how the branch
+    chance's per-order decay falls off — thread depth's effect, independent of
+    both.
     """
     nodes[tip.id] = replace(tip, state=NodeState.WOODY)
     if rng.random() < terminate_chance:
@@ -781,7 +944,9 @@ def _grow_tip(
     nodes.append(continuation)
     new_tip_ids.append(continuation.id)
 
-    branch_chance = genome.branch_probability * branch_multiplier * (BRANCH_ORDER_DECAY ** tip.order)
+    branch_chance = genome.branch_probability * branch_multiplier * (
+        BRANCH_ORDER_DECAY ** (tip.order * depth_exponent)
+    )
     if tip.order < MAX_ORDER and rng.random() < branch_chance:
         side = 1.0 if rng.random() < 0.5 else -1.0
         bearing = _limb_bearing(tip.axis_angle, side, genome)
@@ -832,6 +997,7 @@ def _growth_step(
     active_tips: list[int],
     branch_multiplier: float,
     jitter_multiplier: float,
+    depth_exponent: float,
 ) -> list[int]:
     """Apply one growth step: living tips may extend, branch, or cap off.
 
@@ -846,6 +1012,9 @@ def _growth_step(
     author breadth's only effect on growth. ``jitter_multiplier`` (see
     :func:`_jitter_multiplier`) scales every tip's angle-noise amplitude this step
     — temporal rhythm's only effect, independent of ``branch_multiplier``'s.
+    ``depth_exponent`` (see :func:`_depth_exponent`) scales how fast branch
+    chance decays with order this step — thread depth's only effect, independent
+    of both the others.
     """
     # The termination pressure is sampled once per step from the crown size at its
     # start, so it does not depend on the order tips are visited within the step,
@@ -863,7 +1032,7 @@ def _growth_step(
         grown.extend(
             _grow_tip(
                 tip, nodes, genome, step_index, terminate_chance,
-                branch_multiplier, jitter_multiplier, rng,
+                branch_multiplier, jitter_multiplier, depth_exponent, rng,
             )
         )
     return dormant + grown
@@ -978,10 +1147,11 @@ def _advance_epiphyte(
     It grows and dies back by exactly the same rules as any plant, keyed by its own
     seed and its own age, only far slower — but it accumulates no milestones of its
     own: an epiphyte never blooms and never carries an epiphyte in turn. It also
-    does not inherit the host channel's author breadth or temporal rhythm: it is a
-    passenger on one limb, not itself a reading of the server's crowd or cadence,
-    so its branching and its angle noise always use the neutral multiplier (as if
-    breadth and rhythm were exactly their neutral midpoints).
+    does not inherit the host channel's author breadth, temporal rhythm or thread
+    depth: it is a passenger on one limb, not itself a reading of the server's
+    crowd, cadence or conversation shape, so its branching, its angle noise and
+    its order decay always use the neutral multiplier (as if breadth, rhythm and
+    thread depth were exactly their neutral midpoints).
     """
     genome = epiphyte_genome(host_seed)
     body = epiphyte.structure
@@ -1001,6 +1171,7 @@ def _advance_epiphyte(
             active_tips,
             1.0,
             1.0,
+            1.0,
         )
     return replace(
         epiphyte,
@@ -1018,6 +1189,7 @@ def grow(
     breadth: float = 0.5,
     rhythm: float = 0.5,
     reaction_warmth: float = 0.0,
+    thread_depth: float = NEUTRAL_THREAD_DEPTH,
 ) -> Structure:
     """Return the structure advanced ``steps`` life-steps under ``moisture`` (pure).
 
@@ -1042,7 +1214,15 @@ def grow(
       one grows a more irregular, gnarled one — at the same size and the same
       branching ``breadth`` alone would have produced, since it scales a
       different, independent knob. It defaults to ``0.5`` for the same reason
-      ``breadth`` does.
+      ``breadth`` does. ``thread_depth`` (see :func:`thread_depth`), how much of
+      the channel's recent activity spins off into sustained, multi-voice
+      threads, independently scales how far branch chance persists into higher
+      orders rather than quenching near the trunk (:func:`_depth_exponent`) —
+      a third, independent knob again: a channel heavy on sustained threads
+      grows a more deeply nested branch structure at the same size and the same
+      crown breadth and body regularity ``breadth`` and ``rhythm`` alone would
+      have produced. It defaults to :data:`NEUTRAL_THREAD_DEPTH`, again the
+      neutral point with no effect.
     * **Dieback** (vitality below the threshold): the plant is parched, so instead
       of growing it dies back from the outside in. Dead wood stays in the body
       forever, a permanent scar of the drought.
@@ -1069,6 +1249,7 @@ def grow(
     capacity = _capacity(genome)
     branch_multiplier = _branch_multiplier(breadth)
     jitter_multiplier = _jitter_multiplier(rhythm)
+    depth_exponent = _depth_exponent(thread_depth)
     parched = vitality < DIEBACK_MOISTURE_THRESHOLD
     nodes = list(structure.nodes)
     active_tips = list(structure.active_tips)
@@ -1091,6 +1272,7 @@ def grow(
                 active_tips,
                 branch_multiplier,
                 jitter_multiplier,
+                depth_exponent,
             )
         stats = _milestone_step(stats, len(nodes), vitality, reaction_warmth)
         step_index += 1
