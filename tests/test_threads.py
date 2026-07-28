@@ -9,6 +9,8 @@ actual structures to confirm depth and crown breadth vary independently rather
 than one washing out the other.
 """
 
+from itertools import pairwise
+
 from structure import (
     NEUTRAL_THREAD_DEPTH,
     THREAD_DEPTH_SATURATION_THREADS,
@@ -87,7 +89,7 @@ def test_no_qualifying_threads_reads_neutral_not_an_extreme():
 def test_depth_rises_from_neutral_and_saturates():
     scores = [thread_depth(n) for n in range(THREAD_DEPTH_SATURATION_THREADS + 2)]
     assert scores[0] == NEUTRAL_THREAD_DEPTH
-    assert all(b > a for a, b in zip(scores, scores[1 : THREAD_DEPTH_SATURATION_THREADS + 1]))
+    assert all(b > a for a, b in pairwise(scores[: THREAD_DEPTH_SATURATION_THREADS + 1]))
     assert scores[THREAD_DEPTH_SATURATION_THREADS] == 1.0
     assert scores[-1] == 1.0  # more than enough threads: still capped at 1.0
 

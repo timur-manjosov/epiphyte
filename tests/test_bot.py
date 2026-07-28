@@ -625,3 +625,248 @@ def test_help_view_interaction_check_rejects_other_user() -> None:
 
     assert allowed is False
     interaction.response.send_message.assert_awaited_once()
+
+
+# --- 4: voice sessions (Phase 17) -------------------------------------------
+#
+# The adapter half of voice activity: which stretches of time get credited to
+# whom. The rules themselves are pure and tested in test_voice_activity.py; what
+# is genuinely risky here is the bookkeeping around them — that a channel is
+# settled *before* its membership changes, so each stretch is judged at the
+# headcount that actually held during it, and that mute/deafen/AFK transitions
+# take somebody out of the room as decisively as leaving it does.
+
+
+def _voice_client(guild_id: int = 1) -> bot.EpiphyteClient:
+    """A client with one germinated guild and nothing persisted."""
+    client = bot.EpiphyteClient()
+    client._states[guild_id] = _make_state(guild_id=guild_id)
+    return client
+
+
+def _member(user_id: int, guild_id: int = 1, afk_channel_id: int | None = None) -> MagicMock:
+    """A fake member carrying just the guild attributes the handler reads."""
+    member = MagicMock()
+    member.bot = False
+    member.id = user_id
+    member.guild.id = guild_id
+    member.guild.afk_channel = MagicMock(id=afk_channel_id) if afk_channel_id else None
+    return member
+
+
+def _voice_state(channel_id: int | None, muted: bool = False, deafened: bool = False) -> MagicMock:
+    """A fake voice state: in ``channel_id`` (or nowhere), optionally silenced."""
+    state = MagicMock()
+    state.channel = MagicMock(id=channel_id) if channel_id is not None else None
+    state.mute = False
+    state.self_mute = muted
+    state.deaf = False
+    state.self_deaf = deafened
+    return state
+
+
+def _weights(client: bot.EpiphyteClient, guild_id: int = 1) -> dict[int, float]:
+    return {user: round(weight, 4) for user, (weight, _) in client._voice_presence.get(guild_id, {}).items()}
+
+
+def test_sitting_alone_in_a_voice_channel_earns_nothing(monkeypatch) -> None:
+    """The headline claim, exercised through the actual event handler rather
+    than the pure rule: someone joins, stays audible for eight hours, and no
+    presence weight is ever created for them."""
+    client = _voice_client()
+    monkeypatch.setattr(bot.time, "time", lambda: 1000.0)
+    asyncio.run(client.on_voice_state_update(_member(11), _voice_state(None), _voice_state(500)))
+
+    asyncio.run(client._settle_open_voice_sessions(1000.0 + 8 * 60 * 60))
+
+    assert client._voice_presence == {}
+    assert client._voice_activity(1, 1000.0 + 8 * 60 * 60) == 0.0
+
+
+def test_two_audible_people_both_accrue_from_the_moment_the_second_arrives(monkeypatch) -> None:
+    """The first person's solo hour is worth nothing and the shared hour is worth
+    the same to both — which only holds if the channel is settled before the
+    second person is added to it."""
+    client = _voice_client()
+    monkeypatch.setattr(bot.time, "time", lambda: 0.0)
+    asyncio.run(client.on_voice_state_update(_member(11), _voice_state(None), _voice_state(500)))
+    monkeypatch.setattr(bot.time, "time", lambda: 3600.0)
+    asyncio.run(client.on_voice_state_update(_member(12), _voice_state(None), _voice_state(500)))
+
+    asyncio.run(client._settle_open_voice_sessions(7200.0))
+
+    weights = _weights(client)
+    assert set(weights) == {11, 12}
+    assert weights[11] == weights[12] > 0.0
+
+
+def test_muting_stops_the_clock_for_the_whole_room(monkeypatch) -> None:
+    """Once one of two people mutes, the room is below the audible minimum, so
+    neither of them accrues anything further however long they stay."""
+    client = _voice_client()
+    monkeypatch.setattr(bot.time, "time", lambda: 0.0)
+    asyncio.run(client.on_voice_state_update(_member(11), _voice_state(None), _voice_state(500)))
+    asyncio.run(client.on_voice_state_update(_member(12), _voice_state(None), _voice_state(500)))
+    monkeypatch.setattr(bot.time, "time", lambda: 3600.0)
+    asyncio.run(client._settle_open_voice_sessions(3600.0))
+    earned = _weights(client)
+
+    asyncio.run(
+        client.on_voice_state_update(_member(12), _voice_state(500), _voice_state(500, muted=True))
+    )
+    asyncio.run(client._settle_open_voice_sessions(3600.0 + 6 * 60 * 60))
+
+    assert _weights(client) == earned
+
+
+def test_the_afk_channel_is_not_a_room_at_all(monkeypatch) -> None:
+    """Two people parked in the guild's designated AFK channel never open a
+    session there, so no amount of time in it can count."""
+    client = _voice_client()
+    monkeypatch.setattr(bot.time, "time", lambda: 0.0)
+    for user_id in (11, 12):
+        asyncio.run(
+            client.on_voice_state_update(
+                _member(user_id, afk_channel_id=999), _voice_state(None), _voice_state(999)
+            )
+        )
+
+    asyncio.run(client._settle_open_voice_sessions(24 * 60 * 60))
+
+    assert client._voice_sessions.get(1, {}) == {}
+    assert client._voice_presence == {}
+
+
+def test_a_rebirth_leaves_the_successor_unrooted() -> None:
+    """Voice presence is wiped with the other two presence tables when a
+    successor germinates — a new plant grows its own roots (see storage.py's
+    module docstring for why this differs from the daily/thread tables)."""
+    client = _voice_client()
+    client._voice_presence[1] = {11: (0.9, 0.0), 12: (0.9, 0.0)}
+    client._voice_sessions[1] = {500: bot.VoiceSession(audible={11, 12}, since=0.0)}
+    client._voice_seconds[(1, 11)] = 400.0
+    client._voice_windows[(1, 11)] = bot.WateringWindow(0.0, 3)
+
+    asyncio.run(client._clear_voice_presence(1))
+
+    assert client._voice_activity(1, 0.0) == 0.0
+    assert 1 not in client._voice_sessions
+    assert not client._voice_seconds and not client._voice_windows
+
+
+# --- 5: set_channel serialized against an in-flight refresh (adversarial
+# consolidation pass, Phase 18) -----------------------------------------------
+#
+# refresh_channel_message's final write only patches message_id onto whatever
+# state is current at that moment, trusting channel_id to already be right.
+# Found by simulating a moderator rebinding the guild's channel while the
+# metabolic tick is mid-flight, still awaiting Discord's response to a post in
+# the *old* channel: without set_channel holding the same per-guild message
+# lock refresh_channel_message and reanchor_channel_message already hold, the
+# tick's delayed write can land after the rebind and pair the *new*
+# channel_id with a message_id that was actually posted to the *old* channel
+# — an orphaned message left behind, and a state that self-heals only on the
+# next tick's discord.NotFound. This reproduces that interleaving directly
+# (rather than asserting on a timing coincidence) and checks the invariant
+# the fix restores: message_id, whenever set, always names a message that was
+# posted to the channel currently recorded as channel_id.
+
+
+def test_rebind_racing_an_in_flight_refresh_does_not_mismatch_channel_and_message() -> None:
+    """A rebind that lands while a tick's post to the old channel is still in
+    flight must never leave the new channel_id paired with the old message."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    old_channel_id, new_channel_id = 100, 200
+    client._states[guild_id] = _make_state(guild_id=guild_id, channel_id=old_channel_id)
+    client._render_bytes = AsyncMock(return_value=b"fake-png")
+
+    send_gate = asyncio.Event()
+    old_message = MagicMock()
+    old_message.id = 999
+
+    async def _delayed_send(*_args, **_kwargs) -> MagicMock:
+        await send_gate.wait()  # simulate the in-flight Discord network call
+        return old_message
+
+    old_channel = _make_channel(channel_id=old_channel_id)
+    old_channel.send = AsyncMock(side_effect=_delayed_send)
+    new_channel = _make_channel(channel_id=new_channel_id)
+
+    async def _resolve(channel_id: int) -> MagicMock:
+        return old_channel if channel_id == old_channel_id else new_channel
+
+    client._text_channel = AsyncMock(side_effect=_resolve)
+
+    async def scenario() -> None:
+        refresh_task = asyncio.create_task(client.refresh_channel_message(guild_id))
+        await asyncio.sleep(0)  # let it block inside old_channel.send()
+
+        # Fired concurrently, not awaited inline: set_channel now waits on the
+        # same lock refresh_channel_message holds for its whole body.
+        rebind_task = asyncio.create_task(client.set_channel(guild_id, new_channel_id))
+        await asyncio.sleep(0)
+
+        send_gate.set()  # let the delayed post resolve
+        await refresh_task
+        await rebind_task
+
+    asyncio.run(scenario())
+
+    final = client._states[guild_id]
+    assert final.channel_id == new_channel_id
+    # message_id 999 was posted to old_channel_id; it must never be paired
+    # with new_channel_id — either it is cleared (the rebind ran after the
+    # tick's write and correctly wiped it) or, if seen before the rebind,
+    # message_id would still correctly refer to the old channel. Both are
+    # fine; the one forbidden outcome is exactly the one this test pins down.
+    assert not (final.channel_id == new_channel_id and final.message_id == old_message.id)
+
+
+# --- 6: a watering racing the metabolic tick's own state read (adversarial
+# consolidation pass, Phase 18) ------------------------------------------------
+#
+# advance_life reads its guild's state once at the top, then awaits several
+# lookups (breadth, rhythm, reaction warmth, thread depth, the voice-presence
+# prune) before its final store. Every one of those is real I/O
+# (asyncio.to_thread against SQLite), so a message's watering — itself
+# atomic, since water_plant reads-then-stores with no await in between, see
+# _store's docstring — can land in that window. Storing the moisture computed
+# from the stale pre-watering snapshot on top of it would silently discard
+# the watering; this pins down that the tick instead folds it in.
+
+
+def test_a_watering_that_lands_mid_tick_is_not_silently_dropped(monkeypatch) -> None:
+    """A message arriving while advance_life awaits its internal lookups must
+    still show up in the moisture the tick finally stores."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now0 = 1_000_000.0
+    client._states[guild_id] = storage.GuildState(
+        guild_id=guild_id, structure=structure.germinate(seed=1),
+        moisture=0.5, last_update=now0, channel_id=100, message_id=None,
+    )
+    monkeypatch.setattr(bot.time, "time", lambda: now0 + 10)
+
+    real_guild_rhythm = client._guild_rhythm
+
+    async def _slow_guild_rhythm(guild_id: int, now: float) -> float:
+        await asyncio.sleep(0)  # yields control -- a message can land here
+        return await real_guild_rhythm(guild_id, now)
+
+    client._guild_rhythm = _slow_guild_rhythm
+
+    async def scenario() -> None:
+        tick_task = asyncio.create_task(client.advance_life(guild_id, now0 + 10))
+        await asyncio.sleep(0)  # let the tick get into its awaited lookups
+        await client.water_plant(guild_id, user_id=42, now=now0 + 10)
+        await tick_task
+
+    asyncio.run(scenario())
+
+    final = client._states[guild_id]
+    decay_only = moisture.decay(0.5, 10.0)
+    assert final.moisture > decay_only, (
+        "the concurrent watering must be reflected in the tick's final store, "
+        "not overwritten by a value computed before it landed"
+    )

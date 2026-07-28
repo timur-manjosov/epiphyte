@@ -70,6 +70,19 @@ of its own.
   account, changes nothing. A server that has simply never used threads is
   never penalised for it either; the shape only ever moves toward *more*
   nested as genuine thread use accumulates.
+- **A hidden root system** — everything above happens in writing, where anyone
+  scrolling can see it. Time spent talking together in voice channels is the
+  other half of a server's life, the half nobody sees — so it grows the half of
+  a plant nobody sees: a root system in the soil and a thickening at the foot
+  of the trunk. It is meant to stay hidden. Nothing shows at all until several
+  different people have sustained real shared voice time over real days, and
+  even then it emerges slowly rather than all at once, so a server that lives
+  in voice is something you notice by looking at the picture, not something
+  the plant announces. Time only counts while at least two people are *audibly*
+  in the same channel — sitting there muted, deafened, or parked in the AFK
+  channel counts for nothing, and so does sitting there alone, for however
+  many hours. A server that never touches voice is never penalised for it: it
+  simply renders exactly as it always did.
 - **A body that remembers** — vitality and body are separate things. Leaves
   flush on the living tips when moisture is high and fall when it drops, and
   colour and posture follow the mood of the moment — but growth and death are
@@ -127,7 +140,11 @@ of its own.
   tree by flooding.
 - **Privacy** — the bot only needs to know *that* a message arrived, never
   *what* it said. It reads no message content and requests **no privileged
-  gateway intents**.
+  gateway intents**. The root system is the same: it needs to know that people
+  are in a voice channel together and whether they are muted, which Discord
+  reports as ordinary voice state. Epiphyte never joins a voice channel and
+  never receives, records or listens to any audio — there is no code in it that
+  could.
 
 Same rules, different seeds — four servers' mature plants, each an individual:
 
@@ -233,7 +250,7 @@ lives in the code or repository.
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`), the
 plant's genome, growth, dieback, lifecycle, milestones, author breadth,
-temporal rhythm and thread depth (`structure.py`), everything it says about itself (`voice.py`),
+temporal rhythm, thread depth and voice activity (`structure.py`), everything it says about itself (`voice.py`),
 and the shape and colour of the message it says it in (`presentation.py`) — is
 tested with pytest and depends on neither Discord nor Pillow. Rendering
 (`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated

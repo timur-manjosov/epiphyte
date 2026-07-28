@@ -81,6 +81,24 @@ equally wide-crowned one whose activity stays flat in the main channel. Unlike
 author breadth, a channel that has simply never used threads at all — the
 ordinary case for most servers — is never penalised for it: see
 :data:`NEUTRAL_THREAD_DEPTH`.
+
+Voice-channel activity is a fifth signal, and the quietest one in the whole
+model. Text, reactions and threads are all visible in the room; time spent
+talking in a voice channel is a parallel dimension of a community's life that
+nobody scrolling the channel ever sees — the same way roots are the part of a
+real plant nobody sees until they look for them. So it drives a root system and
+a thickened trunk base (``root_spread``, read by ``render.py``) rather than any
+part of the branching model, and it does so *only* past a deliberately high
+threshold: see :func:`root_spread`. What counts as genuine voice activity is
+:func:`voice_is_audible` and :func:`shared_voice_seconds` — a person alone in a
+channel, or sitting muted, deafened or parked in the guild's AFK channel, earns
+nothing at all, however long they stay.
+
+Note that this signal touches *nothing* :func:`grow` computes: it is never
+passed to :func:`grow`, so a body grown under any amount of voice activity is
+byte-identical to one grown under none. Its independence from author breadth,
+temporal rhythm and thread depth is therefore structural rather than merely
+tested — there is no shared term for the four to interact through.
 """
 
 from __future__ import annotations
@@ -271,6 +289,56 @@ NEUTRAL_THREAD_DEPTH: float = 0.5
 #: always did pre-Phase-16 — so this only ever lets deep branch structures
 #: persist to higher orders than the baseline, never quenches them faster.
 DEPTH_ORDER_EXPONENT_MIN: float = 0.55
+
+# --- Voice constants (the room nobody scrolling ever sees) -------------------
+#
+# The fifth vitality dimension, and deliberately the most understated one in the
+# model. It is also the only one that touches no part of grow() at all: it drives
+# the root system and the trunk's basal flare in render.py, which is genuinely new
+# visual territory rather than another reading of the crown. That placement is
+# what makes it provably independent of author breadth, temporal rhythm and thread
+# depth — those three share grow()'s branch/angle terms and had to be shown not to
+# interfere; voice activity has no term in common with any of them to interfere
+# through.
+#
+# The distinct-presence reading itself is deliberately *not* recalibrated here:
+# bot.py feeds voice presence weights straight into author_breadth(), exactly as
+# it already does for reaction warmth. "How many distinct people cleared the
+# presence floor, saturating at a modest count" is the same anti-clique property
+# this signal needs, and BREADTH_SATURATION_VOICES's bar is, if anything, harder
+# to clear in a voice channel than in a text one — being audible together
+# requires simultaneity, which posting does not — which is exactly right for a
+# dimension that is meant to stay hidden until it is genuinely earned. All the
+# voice-specific calibration lives in root_spread() instead.
+
+#: Distinct audible people who must be in the *same* voice channel at the same
+#: moment before any of that time counts (see :func:`shared_voice_seconds`).
+#: One person sitting alone in a channel, muted or not, for however many hours,
+#: earns exactly nothing — the direct answer to the admission test's
+#: "not farmable by a single person alone", and a stricter one than the text
+#: signals can manage, since here the requirement is simultaneity rather than a
+#: per-person cap on an amount.
+VOICE_MIN_AUDIBLE: int = 2
+#: Shared audible time that earns one participant one watering-shaped credit
+#: toward their voice presence weight. Fifteen minutes: long enough that a
+#: dip-in-and-out cannot mint credits, short enough that an ordinary call
+#: earns several. The credits themselves then run through the same per-person
+#: diminishing-returns window as watering (``moisture.next_watering``, see
+#: ``bot.py``), so a whole day spent in voice is worth a small, capped amount
+#: and real presence still costs several distinct real days.
+VOICE_CREDIT_SECONDS: float = 15 * 60
+#: Voice activity below which the root system is *completely* invisible — not a
+#: small effect, exactly none (:func:`root_spread` returns ``0.0``, and every
+#: root visual in ``render.py`` is purely additive on top of that zero). At
+#: :data:`BREADTH_SATURATION_VOICES` of six, this is three distinct people each
+#: holding sustained voice presence: a duo who call each other daily is not what
+#: "this server has a hidden life in voice" means, and must not read as it.
+VOICE_ROOT_THRESHOLD: float = 0.5
+#: Curvature of the emergence past that threshold. Two: the root system does not
+#: fade in linearly from the threshold but starts almost imperceptibly and only
+#: becomes clearly legible near saturation, so the visible band is the top of the
+#: range rather than the whole of it — "subtle" as a shape, not as an adjective.
+VOICE_ROOT_EXPONENT: float = 2.0
 
 # --- Dieback constants (the body remembers drought) --------------------------
 #
@@ -848,6 +916,91 @@ def thread_depth(qualifying_threads: int) -> float:
         return NEUTRAL_THREAD_DEPTH
     saturation = _clamp01(qualifying_threads / THREAD_DEPTH_SATURATION_THREADS)
     return NEUTRAL_THREAD_DEPTH + saturation * (1.0 - NEUTRAL_THREAD_DEPTH)
+
+
+def voice_is_audible(
+    *, connected: bool, muted: bool, deafened: bool, in_afk_channel: bool
+) -> bool:
+    """Whether one person's voice state counts as being genuinely in the room.
+
+    Being *connected* to a voice channel is not the same as being part of what
+    happens in it. Someone muted contributes nothing anyone can hear, someone
+    deafened is not even listening, and someone parked in the guild's designated
+    AFK channel has been moved there precisely because they stopped taking part.
+    All three read the same as not being connected at all, so idling in voice —
+    the cheapest possible way to fake this signal — accumulates nothing.
+
+    ``muted``/``deafened`` are meant to cover both the self-set and the
+    server-set flag: the caller (``bot.py``) ORs each pair before calling. Pure:
+    the caller supplies the flags it read off the gateway event.
+    """
+    return connected and not muted and not deafened and not in_afk_channel
+
+
+def shared_voice_seconds(audible_count: int, elapsed_seconds: float) -> float:
+    """Return how much of an interval counts as genuine shared voice time.
+
+    ``audible_count`` is how many people were simultaneously audible (per
+    :func:`voice_is_audible`) in one voice channel for the whole of
+    ``elapsed_seconds``. Below :data:`VOICE_MIN_AUDIBLE` this is zero — not
+    discounted, zero: a person alone in a voice channel is not voice activity in
+    the sense this signal means, no matter how many hours they sit there, and
+    neither is a channel full of muted lurkers. Pure: no clock, no I/O; the
+    caller measures the interval and counts the room.
+    """
+    if audible_count < VOICE_MIN_AUDIBLE:
+        return 0.0
+    return max(0.0, elapsed_seconds)
+
+
+def voice_credits(accumulated_seconds: float) -> tuple[int, float]:
+    """Split accumulated shared voice time into whole credits and a remainder.
+
+    Returns ``(credits, leftover_seconds)``, where each credit is one
+    :data:`VOICE_CREDIT_SECONDS` stretch the caller then puts through the same
+    per-person diminishing-returns window a message watering goes through (see
+    ``bot.py``). Carrying the remainder forward rather than discarding it is what
+    lets several short calls across an evening add up to the same credit a single
+    long one would earn, instead of rewarding one unbroken session over the
+    ordinary shape of real conversation. Pure.
+    """
+    if accumulated_seconds < VOICE_CREDIT_SECONDS:
+        return 0, max(0.0, accumulated_seconds)
+    credits = int(accumulated_seconds // VOICE_CREDIT_SECONDS)
+    return credits, accumulated_seconds - credits * VOICE_CREDIT_SECONDS
+
+
+def root_spread(voice_activity: float) -> float:
+    """Map voice activity to how far the plant's root system shows, in ``[0, 1]``.
+
+    ``voice_activity`` is the breadth reading over voice presence weights — the
+    same :func:`author_breadth` calculation ``bot.py`` already applies to message
+    authors and to reactors, over the people who have sustained genuine shared
+    voice time (see the "Voice constants" block above for why it is deliberately
+    not recalibrated).
+
+    The curve is the whole design of this dimension, and it is deliberately not
+    linear. Below :data:`VOICE_ROOT_THRESHOLD` the result is exactly ``0.0``, so
+    a server that never uses voice — and equally a server where two people call
+    each other every day — renders precisely as it did before this signal
+    existed; absence is an abstention, never a penalty, the same reading
+    :data:`NEUTRAL_THREAD_DEPTH` gets for never having used threads. Above the
+    threshold the remaining range is raised to :data:`VOICE_ROOT_EXPONENT`, so
+    the emergence starts almost imperceptibly and only becomes clearly legible
+    near saturation: with the constants as they stand, four sustained voices
+    yield about a tenth of full spread, five about four tenths, and only six
+    the whole of it.
+
+    Because every root visual in ``render.py`` is additive on top of ``0.0``,
+    "no voice activity" is not merely calibrated to look like the old behaviour
+    — it *is* the old behaviour, in the same forced way :func:`_depth_exponent`
+    returns exactly ``1.0`` below its own neutral point. Pure.
+    """
+    activity = _clamp01(voice_activity)
+    if activity <= VOICE_ROOT_THRESHOLD:
+        return 0.0
+    beyond = (activity - VOICE_ROOT_THRESHOLD) / (1.0 - VOICE_ROOT_THRESHOLD)
+    return beyond ** VOICE_ROOT_EXPONENT
 
 
 def _jitter_multiplier(rhythm: float) -> float:
