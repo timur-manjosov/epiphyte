@@ -1,218 +1,215 @@
 # Epiphyte 🌱
 
-**A Discord bot that grows a single living plant from your server's activity.**
+**A Discord bot that grows one living plant from your server's activity.**
 
-Every message anywhere in the server waters the plant; silence lets it wither
-over days. Epiphyte is not a utility bot — it is a small art project with an
-honest side effect: the plant shows, unvarnished, how alive a server really is.
+Every message anywhere in the server waters it. Silence lets it wither. A long
+enough drought kills branches for good, and the scars stay. Epiphyte is not a
+utility bot; it is a small art project with an honest side effect — the plant
+shows, unflatteringly, how alive a server actually is.
 
 <p align="center">
   <img src="assets/growth.gif" alt="A plant accumulating from a sprout into a branching tree" width="320">
 </p>
 
-## What it is, and why
+## The thesis
 
-Epiphyte renders **one plant** for the whole server, displayed in whichever
-channel you choose. People talking anywhere in the server keeps it lush; a
-quiet server lets it dry out and wither. Nothing to click, nothing to
-maintain — the plant simply mirrors the room.
+**One server, one plant, one continuously accumulating measure of vitality.**
+Everything else in this project is derived from that single mechanic — never a
+second feature bolted on beside it.
 
-The catch that makes it honest: you cannot fake a thriving plant. A single
-person spamming hits **diminishing returns** and cannot keep it alive on their
-own — only genuine activity from several people can. The plant is a mirror,
-not a scoreboard.
+The important word is *accumulating*. The plant is not a gauge that reads out
+current moisture; it is the sum of its whole life. Growth is permanent, and so
+is death: a branch a drought killed in March is still a bare grey scar in
+September, long after the leaves came back. Two plants at identical moisture
+will not look alike, because they did not live alike.
 
-Every server gets its own isolated plant — there is no shared, cross-server
-world. And no two are alike: each plant grows from its own seed into a body that
-accumulates over its whole life, so the same moisture never means the same
-shape. A plant *is* its history — and a server that stays alive for months will
-see things a busy weekend can never buy: a bloom, a seed, eventually an epiphyte
-of its own.
+There is no final form and no win state. The plant grows, can die, and its line
+continues in a mutated successor. Every server gets its own isolated plant —
+there is no shared cross-server world, and nothing to compare against anyone
+else.
 
-## How it works
+## What it refuses to do
 
-- **Watering** — each message anywhere in the server adds a little moisture.
-- **Withering** — moisture decays exponentially; left in silence, the plant
-  falls from thriving to withered over roughly three days. A *prolonged* drought
-  goes further: the outermost branches die back for good, from the tips inward.
-- **Growth** — the plant is a persistent, growing body, not a snapshot. On a
-  steady heartbeat the bot grows it one step — extending and branching it — and
-  what grows *stays*. Moisture sets the pace: a dry plant barely grows, so a full
-  tree is the reward of weeks of sustained activity, not a single busy evening.
-- **A life of its own** — the plant lives in the channel as a single message the
-  bot keeps updated in place. It grows and withers there on its own over days,
-  with no command and nobody watching. Growth advances only while the bot is
-  running; moisture, by contrast, is decayed exactly across any downtime, so a
-  quiet week away still shows.
-- **Many voices, a wider crown** — growth isn't just gated by how much moisture
-  there is; how many *different* people the recent activity comes from shapes
-  the crown's shape. A channel kept alive by several regulars branches into a
-  wider, bushier crown than an equally healthy but single-voiced one — and,
-  just like watering, a handful of messages from a few fresh accounts today
-  doesn't count: a voice only registers after it has shown up across several
-  real days.
-- **A steady rhythm, a calmer shape** — separately from *who* is talking, *how
-  evenly* they talk over time shapes how symmetric or gnarled the body grows.
-  A channel with a steady day-to-day cadence, over an eight-week window, grows
-  a calmer, more even shape; one whose activity comes in occasional bursts —
-  quiet all week, then a weekend spike — grows a more irregular, knotted one,
-  at the same size and the same crown breadth. No amount of message volume can
-  buy steadiness: only genuine spread across real days can.
-- **Threads become depth** — a conversation that spins off into its own thread
-  is, structurally, exactly what a side branch is: something that leaves the
-  main line and keeps developing on its own. A channel where that happens
-  regularly grows a more deeply nested branch structure than an equally
-  healthy, equally wide-crowned one whose activity stays flat in the main
-  channel — a separate knob again from who's talking or how evenly. A thread
-  only counts once it looks like a real, unfolding conversation: at least two
-  people, each posting more than once, spread over real time — a thread
-  someone opens and abandons, or pads with a single reply from a second
-  account, changes nothing. A server that has simply never used threads is
-  never penalised for it either; the shape only ever moves toward *more*
-  nested as genuine thread use accumulates.
-- **A hidden root system** — everything above happens in writing, where anyone
-  scrolling can see it. Time spent talking together in voice channels is the
-  other half of a server's life, the half nobody sees — so it grows the half of
-  a plant nobody sees: a root system in the soil and a thickening at the foot
-  of the trunk. It is meant to stay hidden. Nothing shows at all until several
-  different people have sustained real shared voice time over real days, and
-  even then it emerges slowly rather than all at once, so a server that lives
-  in voice is something you notice by looking at the picture, not something
-  the plant announces. Time only counts while at least two people are *audibly*
-  in the same channel — sitting there muted, deafened, or parked in the AFK
-  channel counts for nothing, and so does sitting there alone, for however
-  many hours. A server that never touches voice is never penalised for it: it
-  simply renders exactly as it always did.
-- **A body that remembers** — vitality and body are separate things. Leaves
-  flush on the living tips when moisture is high and fall when it drops, and
-  colour and posture follow the mood of the moment — but growth and death are
-  permanent. A drought that kills a branch leaves a bare, weathered scar that
-  stays legible long after the leaves, and the rest of the plant, have recovered.
-- **Flowering** — kept genuinely healthy for weeks on end, the plant banks that
-  health and eventually comes into bloom, in a colour its own genome decides.
-  Flowering then spends the very reserve it took to get there, so the bloom fades
-  by itself and the next one has to be earned again: a season, not a switch. A
-  bloom that lasts long enough sets seed, and those pale seed heads stay on the
-  body long after the flowers are gone.
-- **A bloom's own vividness** — how a given bloom looks isn't fixed either.
-  Whether a bloom happens at all still depends only on banked health and a
-  mature body, but how vivid and abundant it opens — a scattering of pale
-  flowers versus colour on nearly every branch — reflects how broadly, not how
-  loudly, the room has reacted to what's said, sampled once as the bloom
-  begins and held for its whole run. A single account reacting to its own
-  messages counts for nothing; a handful of people trading reactions with each
-  other only ever counts as that same handful, no matter how often — only
-  reactions from a genuinely broad, sustained set of people brighten a bloom,
-  and a bloom nobody reacted to still opens, just modestly.
-- **An epiphyte of its own** — a tree that has grown very old and very large and
-  flowered several times over can take on the thing this project is named after: a
-  second, far smaller plant that settles on one of its old limbs and grows there,
-  with a seed and a dwarfed genome of its own. It cannot be hurried.
-- **Death and lineage** — abandon a server for long enough and even the inner
-  wood dies: the plant dies, lingers a while as a bare grey skeleton, then a new
-  seed sprouts in its place. That seed is a mutation of the one before, so each
-  generation resembles its parent yet is its own individual, and a plant that
-  lived to set seed hands on a richer line. There is no final state — the line
-  simply continues.
-- **It speaks for itself** — the plant describes its own condition in the first
-  person: thirst, drought, the wood a dry spell cost it, the flowering it can
-  finally afford. It has a pool of phrasings for every state it can be in and
-  picks from them by its own seed, so two servers rarely hear the same sentence
-  and no plant repeats itself from one day to the next. What it says changes only
-  when something real changes — a size class reached, a drought crossed, a death,
-  a bloom — never just because the picture was redrawn. Practical messages
-  (permissions, setup, `/help`) stay plain and unpoetic on purpose.
-- **The frame is a readout too** — the message around the plant is shaped by what
-  the plant is going through, not by a fixed template. Its accent colour shifts
-  with the plant's condition (leaf green when steady, gold at first thirst, brown
-  in drought, red while a drought is costing it wood, grey at death, and the
-  plant's *own* flower colour while it is in bloom), and each life event is laid
-  out differently: a seedling is a few words beside a small picture, a thriving
-  plant shows a full row of readings, a plant in drought shows a single number,
-  and a dead one shows nothing but the bare grey body. There is nothing to
-  configure here either — like the plant itself, the frame is derived, not chosen.
-- **Once a year, the rings** — for one day when a calendar year turns, the plant
-  stops showing itself and shows a cross-section of its own trunk instead: one
-  ring per finished year, read from the centre outward. A year the server spent
-  alive is a wide, dark band; a quiet stretch is a thin, pale one; a year a
-  drought cost the plant wood for good is a grey scar ring — the same drought
-  that left the bare grey branches on the ordinary picture, seen from the other
-  angle. It is not a sixth thing that shapes the plant and it changes nothing
-  about how it grows: it is the same history the plant has already lived
-  through, read backward for a day. The year in progress is never drawn, because
-  a ring is finished wood; a plant younger than its first full year simply shows
-  itself as usual, and a new generation starts its rings over, since no trunk can
-  contain a year in which it did not exist.
-- **A little wind** — while somebody in the server is typing, the plant's crown
-  leans a few pixels, as if the air in the room had moved; a minute and a half
-  after the last keystroke it stands still again. It is the smallest thing in
-  the project and deliberately the least significant: it measures nothing,
-  remembers nothing and changes nothing about how the plant grows — two people
-  typing stir exactly as much air as one, and the moment the bot restarts it has
-  forgotten the weather entirely. Nothing is redrawn for it either; it only ever
-  shows in a picture that was being drawn anyway, so it is something you catch
-  rather than something you are shown. Like the rings, it is not a sixth thing
-  the server's life feeds — it is weather over the plant, not part of it.
-- **Individuality** — every server's plant grows from its own random seed: a
-  genome fixing its branching angles, bushiness, vigour, foliage and the colour it
-  flowers in, so no two servers ever grow the same plant, and a seed carries those
-  traits to its heirs.
-- **Fairness** — repeated watering by the same person within a window yields
-  progressively less, and growth is gated by moisture, so no one can farm a big
-  tree by flooding.
-- **Privacy** — the bot only needs to know *that* a message arrived, never
-  *what* it said. It reads no message content and requests **no privileged
-  gateway intents**. The root system is the same: it needs to know that people
-  are in a voice channel together and whether they are muted, which Discord
-  reports as ordinary voice state. Epiphyte never joins a voice channel and
-  never receives, records or listens to any audio — there is no code in it that
-  could.
+These are not defaults awaiting a config flag. They are the design.
 
-Same rules, different seeds — four servers' mature plants, each an individual:
+- **Three commands, total** — `/plant`, `/epiphyte-channel`, `/help`. That
+  number is meant to stay small for the lifetime of the project.
+- **No settings, no themes, no options.** Everything about how the plant looks
+  and what it says is *derived* from state. If it could be chosen, it would stop
+  being a measurement.
+- **No leaderboard, ever.** The plant is a mirror, not a scoreboard. It says
+  nothing about who talked most.
+- **No privileged gateway intents.** `discord.Intents.default()` is the whole
+  ask — no Message Content, no Server Members, no Presence. The bot knows *that*
+  a message arrived, never what it said.
+- **Nothing farmable by one person.** Every signal below either caps a single
+  account's contribution or requires several people at once. That constraint is
+  a precondition for admitting a signal at all, not a patch applied afterwards.
+- **Depth comes from rules and time, not from commands.** Richness lives in the
+  system's behaviour over weeks; the surface stays narrow.
+
+## Six ways a server shows up in the plant
+
+Six independent honest signals feed the same organism, each moving a *different*
+part of it. They do not interfere: crown width, angle noise, branching depth,
+bloom vividness and the root system are separate levers, and the base mechanic
+gates all of it.
+
+| What the server does | What it grows | Why it can't be farmed |
+|---|---|---|
+| **Messages** anywhere in the server | Moisture, and the growth it gates | Repeat watering by one person decays within a window — one account's total per window is bounded no matter how much it posts |
+| **How many different people** talk | Crown breadth — a wider, bushier canopy | A voice only registers after it has held presence across several real days; fresh accounts today count for nothing |
+| **How evenly** they talk over 8 weeks | Growth form — calm and symmetric, or gnarled | Measured as evenness across days, which is scale-invariant: volume buys nothing, only genuine spread |
+| **Reactions**, sampled once as a bloom opens | Bloom vividness — sparse pale flowers, or colour everywhere | Self-reactions count zero; a clique trading reactions only ever counts as its own headcount |
+| **Threads** that become real conversations | Branching depth — more deeply nested structure | A thread needs ≥2 people, each posting more than once, spread over ≥30 minutes |
+| **Shared voice time** | A root system and a thickening trunk foot | Time only runs while ≥2 people are *audibly* in one channel — one person alone generates exactly nothing, for any number of hours |
+
+A few of these deserve more than a table row.
+
+**Breadth vs. rhythm are genuinely different questions.** Breadth asks *how many
+voices*; rhythm asks *how evenly spread over time*, regardless of headcount. A
+server carried by two people every single day and a server with a dozen people
+who only appear on Saturdays grow visibly different bodies — one calm and even,
+one knotted — at the same size.
+
+**Threads only ever help.** Most servers never use threads, and that must never
+count against them permanently. Depth moves from neutral upward only; a server
+with no threads renders exactly as it always did.
+
+**The roots are meant to stay hidden.** Everything else happens in writing,
+where anyone scrolling can see it. Time spent talking together in voice is the
+half of a server's life nobody sees, so it grows the half of a plant nobody
+sees. Nothing appears at all below a real threshold of sustained shared time,
+and then it emerges slowly. Sitting muted, deafened, or parked in the AFK
+channel counts precisely as much as not being connected. **Epiphyte never joins
+a voice channel and never receives, records or listens to any audio** — there is
+no code in it that could. It sees voice state, the same thing your own client
+shows you.
+
+Same rules, different seeds — four mature plants, each an individual:
 
 ![Four different mature plants grown from different seeds](assets/individuals.png)
 
-Vitality plays over a body that keeps the record — lush, then a drought, then
-recovered. The leaves return, but the dead branch the drought cost stays as a scar:
+## A body that keeps the record
+
+Vitality and body are separate things, and that separation is the whole point.
+
+- **Leaves and posture follow the moment.** They flush on living tips when
+  moisture is high, fall when it drops, and the plant droops when parched.
+- **Growth and death do not.** On a steady hourly heartbeat the bot grows the
+  plant one step, gated by moisture — so a full tree is the reward of *weeks* of
+  sustained activity, never one busy evening. What grows, stays.
+- **A prolonged drought kills wood.** Branches die back from the tips inward and
+  are never removed or revived. The recovery is real; so is the scar.
 
 ![A plant lush, then parched by a drought, then recovered while a dead branch remains as a scar](assets/biography.png)
 
-And when neglect is total, the plant dies — then a mutated successor grows in its
-place, a recognisable but distinct next generation:
-
-![A plant thriving, then dead and grey, then its grown successor resembling it](assets/lineage.png)
-
-At the other end of a life, the rare states have to be earned. Weeks of real health
-bring the plant into bloom; the flowering spends that health and fades again, but
-the seed it set stays on the bare branches:
+Kept genuinely healthy for weeks, the plant banks that health and eventually
+comes into **bloom**, in a colour its own genome chose. Flowering then spends
+the very reserve that bought it, so the bloom fades on its own and the next one
+must be earned again — a season, not a switch. A bloom held long enough **sets
+seed**, and those pale heads stay on the body long after the colour is gone.
 
 ![A tended plant, the same plant in blue blossom, and the same plant parched with only pale seed heads left](assets/bloom.png)
 
-And the rarest of them, on a tree grown old and large and flowered many times over:
-its own epiphyte, a second little organism living on one of its limbs.
+The rarest state is the one the project is named after. A tree grown very old
+and very large, that has flowered several times over, can take on **an epiphyte
+of its own**: a second, far smaller plant that settles on one of its old limbs
+and grows there, with its own seed and a dwarfed genome. It cannot be hurried.
 
 ![An old spreading tree carrying a small blue-green epiphyte, and a close-up of that epiphyte on its branch](assets/epiphyte.png)
 
+And when neglect is total, the inner wood dies too. The plant dies, lingers a
+while as a bare grey skeleton, then a new seed sprouts in its place — a mutation
+of the one before, recognisably related and unmistakably its own individual. A
+plant that lived long enough to set seed hands on a richer line.
+
+![A plant thriving, then dead and grey, then its grown successor resembling it](assets/lineage.png)
+
+## It speaks for itself
+
+The plant describes its own condition in the **first person** — thirst, drought,
+the wood a dry spell cost it, the flowering it can finally afford. It never
+mentions channels, messages, servers or bots; it has no idea it is software.
+
+> "I have just broken the soil. Everything above me is new."
+
+> "I am not the one that stood here. I came out of its seed, and I am small again."
+
+> 🌸 "I opened because I could afford to, sparingly. When I no longer can, I will close."
+
+Every state has a pool of at least eight phrasings, and which one you get is
+chosen deterministically from the plant's own seed — not from `random`. Two
+consequences follow, and both are the point: two servers rarely hear the same
+sentence, and **a restart never changes what your plant is saying.** New text
+appears only when something real changes — a size class reached, a moisture band
+crossed, a death, a bloom. An ordinary heartbeat leaves the words exactly where
+they were, because a plant that re-narrates itself every hour reads as erratic
+rather than alive.
+
+Operational messages — permissions, setup, `/help` — stay deliberately plain.
+Nobody debugging a channel binding should have to decode poetry.
+
+## The frame is a readout too
+
+The message *around* the plant is shaped by what the plant is going through, not
+by one template with substituted values. Each life event gets its own accent
+colour and its own field layout:
+
+- Leaf green when steady, sky blue when flourishing, gold at first thirst, brown
+  in drought, red while a drought is actively costing wood, grey at death — and
+  the plant's *own* flower colour while it is in bloom.
+- The instrument row opens and closes with the plant: a full row of readings
+  when it is thriving, fewer as it dries, none at all at germination and death,
+  where there is nothing to measure that the plant hasn't said better.
+- Beneath it, one quiet constant: a seed-derived sigil, generation, and age in
+  days.
+
+Like everything else here, it is derived, not chosen. There is no theme to pick.
+
+## Two things that are not signals
+
+Both of these are deliberately *not* in the table above, and neither changes how
+the plant grows by a single node.
+
+**Once a year, the rings.** For one day when a calendar year turns, the plant
+stops showing itself and shows a cross-section of its own trunk: one ring per
+finished year, read from the centre outward. A year lived well is a wide dark
+band; a quiet stretch is thin and pale; a year a drought cost it wood is a grey
+scar ring — the same drought that left the grey branches on the ordinary
+picture, seen from the other angle. The year in progress is never drawn, because
+a ring is finished wood. This is not a seventh dimension; it is the same history
+the plant already lived, read backward for a day. A new generation starts its
+rings over, since no trunk can contain a year in which it did not exist.
+
+**A little wind.** While somebody in the server is typing, the crown leans a few
+pixels — a minute and a half after the last keystroke it stands still again. It
+is the smallest thing in the project and deliberately the least significant: it
+measures nothing, stores nothing, and is gone from memory on restart. Two people
+typing stir exactly as much air as one. Nothing is redrawn for it either — it
+only appears in a picture that was already being drawn, so it is something you
+catch rather than something you are shown. It is weather over the plant, not
+part of it.
+
 ## Quickstart
 
-You will need Python 3.11+ and a Discord bot token. From an empty server this
-takes well under ten minutes.
+You need Python 3.11+ and a Discord bot token. From an empty server this takes
+well under ten minutes.
 
 ### 1. Create the bot and get a token
 
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications)
    and create a **New Application**.
-2. Go to **Bot** and click **Reset Token** to reveal the token. Keep it secret —
-   you will pass it to Epiphyte as an environment variable.
-3. No privileged intents are required, so leave **Message Content Intent**,
-   **Server Members Intent** and **Presence Intent** switched **off**.
+2. Go to **Bot** and click **Reset Token** to reveal it. Keep it secret — it
+   reaches Epiphyte only as an environment variable.
+3. Leave **Message Content Intent**, **Server Members Intent** and **Presence
+   Intent** switched **off**. Epiphyte needs none of them.
 
-### 2. Invite the bot to your server
+### 2. Invite the bot
 
 Under **OAuth2 → URL Generator**, select the scopes `bot` and
 `applications.commands`, and the permissions **View Channels**, **Send
-Messages**, **Embed Links** and **Attach Files**. Open the generated URL and add
-the bot to your server.
+Messages**, **Embed Links** and **Attach Files**.
 
 Equivalently, use this URL with your application's client id:
 
@@ -238,68 +235,79 @@ python bot.py
 ```
 
 On first run the bot creates a SQLite file (`epiphyte.db`) in the working
-directory to remember each server's plant across restarts.
+directory, so each server's plant survives restarts.
 
-### 4. Use it in Discord
+### 4. Use it
 
-1. **`/epiphyte-channel #channel`** — choose the channel the plant is displayed
-   in. The bot posts the living plant message there straight away; until this is
-   set, messages are ignored.
-2. Chat anywhere in the server — every message quietly waters the plant, and it
-   grows and withers in the living message on its own over time.
-3. **`/plant`** *(optional)* — get a private snapshot of the plant right now, and
-   bring the living message back down if it has scrolled out of view.
+1. **`/epiphyte-channel #channel`** — choose where the plant lives. The bot
+   posts its living message there straight away. Until this is set, messages are
+   ignored.
+2. **Chat anywhere in the server.** Every message quietly waters the plant; it
+   grows and withers in that one message on its own, over days, with nobody
+   watching.
+3. **`/plant`** *(optional)* — a private snapshot right now, and a nudge to
+   bring the living message back down if it has scrolled away.
 
 ## Configuration
 
-Epiphyte is configured entirely through environment variables; no secret ever
-lives in the code or repository.
+Entirely environment variables. No secret ever lives in the code or repository.
 
 | Variable | Required | Purpose |
 |---|---|---|
 | `EPIPHYTE_TOKEN` | yes | The Discord bot token. |
-| `EPIPHYTE_GUILD_ID` | no | A test server id. If set, slash commands appear there instantly; otherwise they are registered globally and can take up to an hour to propagate. |
+| `EPIPHYTE_GUILD_ID` | no | A test server id. If set, slash commands appear there instantly; otherwise they register globally and can take up to an hour to propagate. |
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `/epiphyte-channel #channel` | Choose the channel the plant is displayed in, and post its living message there. |
+| `/epiphyte-channel #channel` | Choose the channel the plant is displayed in, and post its living message there. Requires **Manage Channels** or **Administrator**. |
 | `/plant` | Show a private snapshot now, and re-anchor the living message if it has scrolled away. Never grows the plant — the heartbeat does that. |
 | `/help` | A private, paginated explanation of what Epiphyte is and what its commands do. |
 
+## Two clocks
+
+Worth knowing if you self-host, because it determines what downtime costs you:
+
+- **Moisture decays lazily** from a stored timestamp, computed exactly from
+  elapsed real time whenever it is read. It survives downtime perfectly — a
+  quiet week away still shows, whether or not the bot was up for it.
+- **Growth advances in discrete steps** on the hourly heartbeat, gated by
+  moisture. It only happens while the bot is running.
+
+So a bot that was offline does not fake a healthy plant. It just didn't grow.
+
 ## Development
 
-The pure logic — moisture decay and the anti-farming curve (`moisture.py`), the
-plant's genome, growth, dieback, lifecycle, milestones, author breadth,
-temporal rhythm, thread depth, voice activity, the yearly rings and the wind
-(`structure.py`), everything it says about itself (`voice.py`),
-and the shape and colour of the message it says it in (`presentation.py`) — is
-tested with pytest and depends on neither Discord nor Pillow. Rendering
-(`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated
-SQLite I/O.
-
-Both the plant's voice and its frame are written to standing design documents in
-[CLAUDE.md](CLAUDE.md): "Die Stimme der Pflanze" covers its register, what it
-never says, which messages are spoken in character and which stay plain, and why
-the text holds still between heartbeats; "Präsentation" covers how each life
-event gets its own colour and layout, and why none of it is configurable. Read
-the relevant one before adding or changing any line the plant speaks, or any
-message it speaks in.
+The pure logic depends on neither Discord nor Pillow and is tested with pytest:
+moisture decay and the anti-farming curve (`moisture.py`); genome, growth,
+dieback, lifecycle, milestones, author breadth, temporal rhythm, thread depth,
+voice activity, the yearly rings and the wind (`structure.py`); everything the
+plant says about itself (`voice.py`); and the shape and colour of the message it
+says it in (`presentation.py`). Rendering (`render.py`) is isolated Pillow I/O
+and persistence (`storage.py`) isolated SQLite I/O.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest              # run the pure-logic tests
+pytest                   # the pure-logic tests
 python -c "import bot"   # token-free smoke test: the module imports cleanly
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the project structure, conventions and
-design guidelines.
+Both the voice and the frame have standing design documents in
+[CLAUDE.md](CLAUDE.md): *"Die Stimme der Pflanze"* covers the plant's register,
+what it never says, which messages are spoken in character and which stay plain,
+and why the text holds still between heartbeats; *"Präsentation"* covers how
+each life event gets its own colour and layout, and why none of it is
+configurable. Read the relevant one before touching any line the plant speaks,
+or any message it speaks in.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for structure, conventions and design
+guidelines.
 
 ## Deployment
 
-A `Dockerfile` and `docker-compose.yml` are included for running Epiphyte as a
-container. See [DEPLOY.md](DEPLOY.md) for the exact steps.
+A `Dockerfile` and `docker-compose.yml` are included. See [DEPLOY.md](DEPLOY.md)
+for the exact steps.
 
 ## Built with
 
