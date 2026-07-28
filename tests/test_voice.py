@@ -211,7 +211,10 @@ def test_the_pools_are_wide_enough_to_watch_daily():
         list(voice._TITLES.values())
         + list(voice._MOODS.values())
         + list(voice._CHAPTERS.values())
-        + [voice._BLOOM_VIVID, voice._BLOOM_MODEST, voice._SEEDED, voice._HOSTING, voice._GERMINATION]
+        + [
+            voice._BLOOM_VIVID, voice._BLOOM_MODEST, voice._SEEDED, voice._HOSTING,
+            voice._GERMINATION, voice._RING_TITLES, voice._RINGS,
+        ]
     )
     for pool in pools:
         assert len(pool) >= 8
@@ -231,7 +234,10 @@ def test_the_plant_never_breaks_character():
             list(voice._TITLES.values())
             + list(voice._MOODS.values())
             + list(voice._CHAPTERS.values())
-            + [voice._BLOOM_VIVID, voice._BLOOM_MODEST, voice._SEEDED, voice._HOSTING, voice._GERMINATION]
+            + [
+            voice._BLOOM_VIVID, voice._BLOOM_MODEST, voice._SEEDED, voice._HOSTING,
+            voice._GERMINATION, voice._RING_TITLES, voice._RINGS,
+        ]
         )
         for line in pool
     ]
@@ -256,6 +262,43 @@ def test_no_heading_stutters_into_its_own_passage():
             if len(phrase.split()) < 2:
                 continue
             assert phrase not in lines, f"{title!r} repeats itself in the {mood.value} passage"
+
+
+def test_the_cross_section_speaks_without_counting_or_stuttering():
+    """The ring lines are drawn from the same seed as the heading over them, so
+    the two must not share a phrase — and neither may ever state the number of
+    years, which is the instrument field's job and not the plant's (a plant does
+    not count itself, and the persona forbids numbers in speech)."""
+    import re as _re
+
+    passages = " ".join(voice._RINGS).lower()
+    for title in voice._RING_TITLES:
+        phrase = title.split(" ", 1)[1].lower().rstrip(".,")
+        assert phrase not in passages, f"{title!r} repeats itself in a ring passage"
+    for line in voice._RING_TITLES + voice._RINGS:
+        assert not _re.search(r"\d", line), f"{line!r} states a number"
+
+
+def test_the_cross_section_never_disturbs_what_the_plant_says_otherwise():
+    """The tick-stability reason the ring pools sit outside ``VoiceState``: a
+    plant showing its rings must still be speaking its ordinary lines underneath,
+    unchanged, so the day the record opens and the day it closes are not read as
+    a general change of mood."""
+    plant = _plant(300, seed=99)
+    state = voice.read_state(plant, 0.5)
+    before = (voice.title(state), voice.passage(state), voice.milestone_lines(state))
+    voice.ring_title(plant.seed, 3)
+    voice.ring_passage(plant.seed, 3)
+    assert (voice.title(state), voice.passage(state), voice.milestone_lines(state)) == before
+
+
+def test_ring_lines_are_stable_within_a_showing_and_move_between_years():
+    """Chosen from the seed and the year count, so the words cannot drift while
+    the record is on show — the count does not change during it — and a later
+    year's showing usually reads differently."""
+    assert voice.ring_passage(4242, 3) == voice.ring_passage(4242, 3)
+    assert len({voice.ring_passage(4242, count) for count in range(1, 12)}) > 1
+    assert len({voice.ring_passage(seed, 3) for seed in range(40)}) > 1
 
 
 def test_presence_lines_are_all_mappable():

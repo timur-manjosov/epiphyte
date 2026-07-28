@@ -102,6 +102,33 @@ def _cases() -> dict[LifeEvent, tuple[structure.Structure, float]]:
     }
 
 
+#: A record of finished years, for the one event that is not a condition of the
+#: plant but a reading of what it has lived through. Kept apart from ``_cases()``
+#: because it genuinely is apart: every other event is resolved from the plant
+#: alone, while this one needs a second input the adapter supplies once a year.
+_RINGS: tuple[structure.Ring, ...] = (
+    structure.Ring(year=2026, vitality=0.62, scarred=False),
+    structure.Ring(year=2027, vitality=0.09, scarred=True),
+    structure.Ring(year=2028, vitality=0.71, scarred=False),
+)
+
+
+def _panels() -> dict[LifeEvent, presentation.Panel]:
+    """One composed panel per life event, including the cross-section.
+
+    The ring event outranks everything but the identity changes, so its plant is
+    an ordinary steady one — a panel that had to be forced into the ring event by
+    a contrived plant would not be testing the resolution order.
+    """
+    panels = {
+        event: presentation.compose(plant, moisture_value, TICK)
+        for event, (plant, moisture_value) in _cases().items()
+    }
+    steady, steady_moisture = _cases()[LifeEvent.STEADY]
+    panels[LifeEvent.RINGS] = presentation.compose(steady, steady_moisture, TICK, _RINGS)
+    return panels
+
+
 # --- Every event is reachable, and reads as itself -----------------------------
 
 
@@ -112,8 +139,8 @@ def test_every_life_event_is_reachable_from_a_real_state():
     states it is asserted against, so those states are run through the same
     ``voice.read_state`` the living message uses rather than hand-built.
     """
-    for event, (plant, moisture_value) in _cases().items():
-        assert presentation.compose(plant, moisture_value, TICK).event is event
+    for event, panel in _panels().items():
+        assert panel.event is event
 
 
 def test_every_life_event_has_an_accent():
@@ -192,10 +219,7 @@ def test_every_life_event_has_its_own_field_structure():
     Compared by shape alone (see ``_signature``): an event that merely swapped the
     numbers inside another event's row would be caught here.
     """
-    signatures = {
-        event: _signature(presentation.compose(plant, moisture_value, TICK))
-        for event, (plant, moisture_value) in _cases().items()
-    }
+    signatures = {event: _signature(panel) for event, panel in _panels().items()}
     assert len(set(signatures.values())) == len(LifeEvent), (
         f"life events share a field structure: {signatures}"
     )
@@ -243,10 +267,7 @@ def test_bloom_accent_stays_distinct_from_fixed_accents_at_every_intensity():
 
 def test_beginnings_accompany_the_words_and_everything_else_leads_with_the_picture():
     """A seedling is a few pixels of thread; it does not get the full-width slot."""
-    panels = {
-        event: presentation.compose(plant, moisture_value, TICK)
-        for event, (plant, moisture_value) in _cases().items()
-    }
+    panels = {panel.event: panel for panel in _panels().values()}
     for event in (LifeEvent.GERMINATION, LifeEvent.REBIRTH):
         assert panels[event].image is ImagePlacement.THUMBNAIL
     for event in set(LifeEvent) - {LifeEvent.GERMINATION, LifeEvent.REBIRTH}:
@@ -406,12 +427,31 @@ def test_no_new_command_surface():
 
 
 def test_composition_takes_no_configuration():
-    """``compose`` reads the plant and the tick interval, and nothing else.
+    """``compose`` reads the plant, the tick interval and its record — nothing else.
 
     A style, theme or palette parameter would be a configuration surface wearing a
-    function signature, so the signature itself is what this pins down.
+    function signature, so the signature itself is what this pins down. ``rings``
+    is not one: it carries derived state (the plant's own finished years, from
+    ``structure.rings``) rather than a preference, nobody can set it, and the two
+    values it can take are decided by the calendar rather than by anyone's taste.
+    The distinction this test exists to hold is *derived versus chosen*, not
+    argument count — an accepted parameter here has to be a fact about the plant.
     """
     import inspect
 
     parameters = list(inspect.signature(presentation.compose).parameters)
-    assert parameters == ["plant", "moisture_value", "seconds_per_step"]
+    assert parameters == ["plant", "moisture_value", "seconds_per_step", "rings"]
+
+
+def test_the_cross_section_is_the_only_thing_rings_can_change():
+    """Passing rings may only ever flip the panel into the ring event; it can
+    never quietly restyle an ordinary day. Checked by composing every other
+    event's plant twice, with and without a record on file."""
+    for event, (plant, moisture_value) in _cases().items():
+        with_rings = presentation.compose(plant, moisture_value, TICK, _RINGS)
+        without = presentation.compose(plant, moisture_value, TICK)
+        if event in (LifeEvent.DEATH, LifeEvent.GERMINATION, LifeEvent.REBIRTH):
+            assert with_rings == without, f"{event} must outrank the cross-section"
+        else:
+            assert with_rings.event is LifeEvent.RINGS, f"{event} should yield to it"
+            assert without.event is event

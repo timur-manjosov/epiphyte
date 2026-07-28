@@ -99,10 +99,24 @@ passed to :func:`grow`, so a body grown under any amount of voice activity is
 byte-identical to one grown under none. Its independence from author breadth,
 temporal rhythm and thread depth is therefore structural rather than merely
 tested — there is no shared term for the four to interact through.
+
+Last of all, and belonging to none of the above, come the tree rings
+(:class:`YearRecord`, :class:`Ring`, :func:`rings`, :func:`ring_layout`). They
+are **not** a sixth vitality signal and must never be read as one: no Discord
+event feeds them that does not already feed something else, they never reach
+:func:`grow`, and nothing about the plant's growth, shape, colour or milestones
+changes by a single node whether they exist or not. They are a second *picture*
+of data the plant has already lived through — one finished calendar year per
+ring, a cross-section instead of a portrait — shown rarely and read backward,
+where every signal above is read forward. The one thing they share with the
+body is where a scar comes from: a ring is scarred exactly when that year's
+dieback killed wood, which is the same event that left the grey branch visible
+in the ordinary picture, counted once and shown twice.
 """
 
 from __future__ import annotations
 
+import datetime
 import math
 import random
 from collections.abc import Iterable, Sequence
@@ -339,6 +353,75 @@ VOICE_ROOT_THRESHOLD: float = 0.5
 #: becomes clearly legible near saturation, so the visible band is the top of the
 #: range rather than the whole of it — "subtle" as a shape, not as an adjective.
 VOICE_ROOT_EXPONENT: float = 2.0
+
+# --- Ring constants (a record of finished years, not a vitality signal) ------
+#
+# Everything above this point reads the *present* and shapes the body the plant
+# is currently growing. The rings read the opposite direction: they are a
+# compressed record of whole calendar years already lived, drawn as a
+# cross-section of the trunk instead of as the plant. Nothing here reaches
+# grow(), touches moisture, or feeds any signal — like root_spread() this is
+# pure logic that only render.py consumes, and unlike root_spread() it does not
+# even modulate the plant's own image: it produces a second, rarely-shown one.
+#
+# A ring encodes a *finished* year. The year in progress is not wood yet, so it
+# is never drawn, and a year the plant barely lived through (it germinated in
+# December, or the bot was down for nearly all of it) is not drawn either — see
+# RING_MIN_TICKS. Which years count as scarred is not a judgement this module
+# makes a second time: it reads the wood the existing Phase 7 dieback actually
+# killed that year, so a scar ring and the bare grey branch it corresponds to
+# are one event counted once, seen from two angles.
+
+#: Observed ticks a calendar year must have before it is drawn as a ring at all.
+#: 720 — thirty days at one tick an hour. Below this the mean the ring would be
+#: drawn from rests on so little of the year that the ring would claim more
+#: history than the plant has: a plant that germinated on the 20th of December
+#: has no measurable first year, exactly as a real seedling has no measurable
+#: first ring. Such a year is dropped rather than drawn faintly, because a faint
+#: ring and a quiet year must not look alike.
+RING_MIN_TICKS: int = 720
+#: Share of a ring's width that every surviving year is granted regardless of how
+#: it went, before the rest is distributed by that year's vitality. A year the
+#: plant lived through at all laid down *some* wood; without this floor a single
+#: bad year in an otherwise good life would collapse to a line too thin to see,
+#: and the picture would say "nothing happened" where the truth is "this went
+#: badly".
+RING_MIN_WIDTH_SHARE: float = 0.35
+
+
+@dataclass(frozen=True)
+class YearRecord:
+    """What one guild accumulated over one real calendar year, as coarsely as possible.
+
+    Written incrementally, one tick at a time, and never reconstructed after the
+    fact — none of the tables the other signals keep reach back further than
+    weeks, so a year's shape has to be accumulated while it happens or not at
+    all. ``ticks`` is how many metabolic ticks of that year the bot actually
+    observed, ``moisture_sum`` the sum of the vitality each of those ticks ran
+    at (so ``moisture_sum / ticks`` is the year's mean vitality), and
+    ``wood_lost`` how many nodes the Phase 7 dieback turned to dead wood during
+    it — the same deaths that left the visible branch scars.
+    """
+
+    year: int
+    ticks: int
+    moisture_sum: float
+    wood_lost: int
+
+
+@dataclass(frozen=True)
+class Ring:
+    """One finished year, reduced to what a cross-section can actually show.
+
+    ``vitality`` is that year's mean moisture in ``[0, 1]`` — deliberately an
+    absolute reading rather than one normalised against the plant's other years,
+    so a uniformly mediocre life is not flattered into looking like a good one.
+    ``scarred`` is true when the year cost the plant wood it can never grow back.
+    """
+
+    year: int
+    vitality: float
+    scarred: bool
 
 # --- Dieback constants (the body remembers drought) --------------------------
 #
@@ -1001,6 +1084,100 @@ def root_spread(voice_activity: float) -> float:
         return 0.0
     beyond = (activity - VOICE_ROOT_THRESHOLD) / (1.0 - VOICE_ROOT_THRESHOLD)
     return beyond ** VOICE_ROOT_EXPONENT
+
+
+def calendar_year(timestamp: float) -> int:
+    """Return the UTC calendar year a Unix ``timestamp`` falls in.
+
+    The counterpart of :func:`day_bucket` on the scale the rings are kept at,
+    and exposed for the same reason: ``bot.py`` and this module must agree on
+    exactly one bucketing without either reading a clock. UTC, again like
+    :func:`day_bucket`, so a guild's year boundary never depends on where its
+    members happen to live. Pure: the caller always supplies the timestamp.
+    """
+    return datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc).year
+
+
+def dead_node_count(structure: Structure) -> int:
+    """Return how many of a body's nodes are dead wood.
+
+    The plant's permanent record of every drought it has survived, as a single
+    number. ``bot.py`` reads it either side of a growth step, so the difference
+    is exactly the wood that step's dieback killed — which is what makes a scar
+    ring and the bare grey branch beside it the same event rather than two
+    independent readings of "a bad year" (see :func:`rings`).
+    """
+    return sum(1 for node in structure.nodes if node.state is NodeState.DEAD)
+
+
+def rings(records: Iterable[YearRecord], current_year: int) -> tuple[Ring, ...]:
+    """Reduce a guild's yearly records to the rings a cross-section can show.
+
+    Returned oldest first — pith outward to bark — which is the order a trunk is
+    actually read in. Two kinds of year are left out, both because drawing them
+    would be a lie rather than because they are uninteresting:
+
+    * ``current_year`` itself, which is still being lived. A ring is finished
+      wood; a year in progress has no width yet and no final vitality.
+    * Any year observed for fewer than :data:`RING_MIN_TICKS` ticks, which is
+      either a germination year that began too late to have a shape or a year
+      the bot spent almost entirely offline. Both would put a confident ring on
+      a handful of samples.
+
+    A year is ``scarred`` exactly when it cost the plant wood — that is Phase
+    7's dieback, read from the deaths it actually caused, not a second drought
+    threshold applied to the same moisture. Pure: no clock, no I/O; the caller
+    supplies the records it holds and which year it currently is.
+    """
+    finished = sorted(
+        (record for record in records if record.year < current_year and record.ticks >= RING_MIN_TICKS),
+        key=lambda record: record.year,
+    )
+    return tuple(
+        Ring(
+            year=record.year,
+            vitality=_clamp01(record.moisture_sum / record.ticks),
+            scarred=record.wood_lost > 0,
+        )
+        for record in finished
+    )
+
+
+def ring_layout(rings: Sequence[Ring]) -> tuple[tuple[float, float], ...]:
+    """Return each ring's ``(inner, outer)`` bounds as fractions of the trunk's radius.
+
+    The disc is a fixed size, so the years share it out between them: a good
+    year takes a wide band and a poor one a narrow band, and a plant that has
+    lived many years shows all of them thinner than a plant that has lived two.
+    That is the one place a ring is read *relative to the plant's own history*,
+    and it is where the comparison belongs — reading a cross-section is exactly
+    comparing one year's band against its neighbours. Absolute vitality is left
+    to the ring's colour (see ``render.py``), so no later good year can quietly
+    repaint an earlier year's severity, only re-space it.
+
+    Every year gets at least :data:`RING_MIN_WIDTH_SHARE` of a full band before
+    vitality distributes the rest. Bounds run from ``0.0`` at the pith to
+    ``1.0`` at the bark and are contiguous — there is no gap between one year
+    and the next, because there was none in the plant's life. Pure.
+    """
+    if not rings:
+        return ()
+    weights = [
+        RING_MIN_WIDTH_SHARE + (1.0 - RING_MIN_WIDTH_SHARE) * _clamp01(ring.vitality)
+        for ring in rings
+    ]
+    total = sum(weights)
+    bounds: list[tuple[float, float]] = []
+    edge = 0.0
+    for weight in weights:
+        inner = edge
+        edge += weight / total
+        bounds.append((inner, edge))
+    # The accumulated float error is nanoscopic, but the outermost ring must meet
+    # the bark exactly — a hairline of background between the two would read as
+    # a gap in the record.
+    bounds[-1] = (bounds[-1][0], 1.0)
+    return tuple(bounds)
 
 
 def _jitter_multiplier(rhythm: float) -> float:

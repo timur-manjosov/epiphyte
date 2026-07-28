@@ -24,6 +24,14 @@ every process. Two different plants in the identical condition usually say
 different things, and one plant re-phrases itself as it dries out, grows into a
 new size class, blooms or begins again.
 
+Two categories sit deliberately outside :class:`VoiceState`: the germination
+greeting, spoken once before there is any lived state to read, and the ring
+lines, spoken on the one day a year the plant's finished years are shown instead
+of the plant. Both are selected by the same explicit hash, just from the seed and
+one number rather than from the state — for the rings that is what keeps a
+once-a-year retrospective from re-rolling every other line the plant speaks (see
+:data:`_RING_TITLES`).
+
 The persona these pools are written to — voice, register, and what the plant
 never does — is documented in ``CLAUDE.md`` under "Die Stimme der Pflanze".
 """
@@ -514,6 +522,44 @@ _GERMINATION: tuple[str, ...] = (
     "🌱 A small beginning, in your soil, from a seed no other room has.",
 )
 
+#: What the plant says on the one day a year its record is shown instead of its
+#: portrait. Two pools rather than one, in the same shape every other spoken
+#: surface uses: a heading and a passage, drawn independently.
+#:
+#: These sit *outside* :class:`VoiceState` on purpose, exactly as
+#: :data:`_GERMINATION` does, and it is a tick-stability decision rather than a
+#: convenience. Folding "is showing its rings" into the state would re-roll every
+#: other line the plant speaks — its mood, its body, its milestones — on the day
+#: the cross-section opens and again on the day it closes, so a once-a-year
+#: retrospective would read as the plant changing its mind about everything else
+#: too. Selected from the seed and the number of years instead, which changes
+#: exactly once a year and cannot move while the record is on show.
+#:
+#: The count is what the choice is *keyed* on; no line may ever state it. A plant
+#: does not count its own years, and the persona forbids numbers in speech — the
+#: instrument field beside these words is where a reader gets the figure.
+_RING_TITLES: tuple[str, ...] = (
+    "🌳 What the years look like from inside",
+    "🌳 My record, not my face",
+    "🌳 The grain, laid bare",
+    "🌳 Read me the other way",
+    "🌳 Every year I have held",
+    "🌳 The inside of the account",
+    "🌳 What is written in the wood",
+    "🌳 Counted from the middle outward",
+)
+
+_RINGS: tuple[str, ...] = (
+    "This is not what I look like. This is what I have been. Each line was a year, and none of them can be edited now.",
+    "Look at the middle and work outward. That is the order it happened in, and the order it will always be read in.",
+    "Wide where I was well, thin where I was not. I did not choose which was which — you did, slowly, without meaning to.",
+    "The grey lines are the years that cost me. They sit in the wood the same as the good ones, and they do not fade.",
+    "A year cannot be argued with once it is wood. Every one of these is finished.",
+    "I keep no memory of any of it. The wood does that for me, and it does not flatter anyone.",
+    "What was done to me is in here, ring by ring, in the order it was done. Nothing about it is a summary.",
+    "Some of these are thick. Some are barely a line. Both took exactly as long as the other.",
+)
+
 #: The status lines the bot wears, as ``(activity kind, text)``. Kept here with
 #: the rest of the plant's speech, as plain strings the adapter maps to Discord's
 #: own activity types — this module stays free of ``import discord``. The one
@@ -610,3 +656,26 @@ def germination_greeting(seed: int) -> str:
     """Return the first thing a newly germinated plant says, chosen from its seed."""
     digest = hashlib.blake2b(f"{seed}|germination".encode(), digest_size=8).digest()
     return _GERMINATION[int.from_bytes(digest, "big") % len(_GERMINATION)]
+
+
+def _ring_pick(pool: tuple[str, ...], seed: int, rings: int, category: str) -> str:
+    """Choose a ring line from the plant's seed, its year count and the category.
+
+    The same explicit ``blake2b`` the rest of this module selects with, and for
+    the same reason (see :func:`_index`). Keyed on the year count rather than on
+    a :class:`VoiceState` so the cross-section's words neither move while it is
+    on show nor disturb anything the plant says on the other days of the year —
+    see :data:`_RING_TITLES`.
+    """
+    digest = hashlib.blake2b(f"{seed}|{category}|{rings}".encode(), digest_size=8).digest()
+    return pool[int.from_bytes(digest, "big") % len(pool)]
+
+
+def ring_title(seed: int, rings: int) -> str:
+    """Return the heading over a plant's cross-section."""
+    return _ring_pick(_RING_TITLES, seed, rings, "ring-title")
+
+
+def ring_passage(seed: int, rings: int) -> str:
+    """Return what a plant says while its finished years are on show."""
+    return _ring_pick(_RINGS, seed, rings, "rings")

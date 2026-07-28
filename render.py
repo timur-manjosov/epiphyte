@@ -40,6 +40,14 @@ soil, plus a thickening at the very foot of the trunk — and it is strictly
 additive: at a spread of ``0.0``, which is what a server that never uses voice
 always gets, every drawing call below behaves exactly as it did before this
 existed.
+
+This module has a second entry point, :func:`render_rings`, and it draws
+something else entirely: a cross-section of the trunk, one ring per finished
+calendar year, from :func:`structure.rings`. It takes no structure, no genome
+and no moisture — the body it would draw is not the subject — and it changes
+nothing about :func:`render`, which produces byte-identical output whether the
+plant has rings on record or not. The two are alternatives the caller chooses
+between for one rare day a year, never layers.
 """
 
 from __future__ import annotations
@@ -54,10 +62,12 @@ from PIL import Image, ImageDraw
 from structure import (
     Genome,
     NodeState,
+    Ring,
     Structure,
     epiphyte_genome,
     has_seeded,
     is_blooming,
+    ring_layout,
     root_spread,
 )
 
@@ -157,6 +167,50 @@ _ROOT_FLARE_REACH = 0.33
 #: How fast the flare falls off across that reach. Cubic, so it is a buttress at
 #: the very foot of the trunk rather than a uniform thickening of its lower third.
 _ROOT_FLARE_FALLOFF = 3.0
+
+# --- The cross-section (a second picture, not a second plant) -----------------
+#
+# Everything above draws the plant as it stands right now. The cross-section
+# below draws the opposite: the finished years behind it, one ring each, read
+# from pith to bark. It shares this module's palette and nothing else — no
+# projection, no pipe model, no vitality modulation — because it is not a view
+# of the body at all, it is a view of the record. It is drawn square rather than
+# in the plant's own 480x600 frame: a disc in a portrait frame is mostly empty
+# soil, and the different shape is itself an honest signal that this is not the
+# usual picture.
+
+#: Side of the cross-section image in pixels. Square, and the same width as the
+#: plant's frame, so the living message's column does not jump when it appears.
+RING_SIZE = 480
+#: Pale, open wood: what a quiet year lays down. Nord's parched brown, reused
+#: rather than reinvented — the colour a thirsty stem already tints toward.
+RING_EARLY = PARCHED
+#: Tight, dark wood: what a year of sustained health lays down. The rooted stem
+#: brown driven down toward the background's value; it stays a brown rather than
+#: sliding blue, since wood in shadow is still wood.
+RING_LATE = (52, 41, 32)
+#: A drought year's ring is drawn in exactly the grey that drought's dead
+#: branches are drawn in elsewhere in this module (:data:`DEAD_WOOD`). The two
+#: are the same event seen from two angles, so they are not given two colours.
+RING_SCAR = DEAD_WOOD
+#: Bark: the rim the outermost year meets. The rooted brown of a trunk's foot.
+RING_BARK = STEM_BOTTOM
+#: How much of the disc's radius the bark rim takes.
+_RING_BARK_SHARE = 0.06
+#: Margin between the disc and the edge of the image (supersampled px).
+_RING_PADDING = 34 * SUPERSAMPLE
+#: Radius of the pith at the very centre, as a share of the wood's radius. The
+#: first year has to start somewhere, and on a real cross-section that somewhere
+#: is a small dark eye rather than a point.
+_RING_PITH_SHARE = 0.045
+#: How many points each ring boundary is drawn from. High enough that the wobble
+#: below reads as an organic edge rather than as a polygon.
+_RING_SAMPLES = 240
+#: Amplitude and angular frequency of the two harmonics that keep a ring from
+#: being a perfect circle. Multiplicative on the radius, so every boundary wobbles
+#: by the same *shape* and rings can never cross into one another however thin
+#: they get. Small: a trunk is round, just not machined.
+_RING_WOBBLE: tuple[tuple[float, float], ...] = ((0.030, 2.0), (0.017, 5.0))
 
 Color = tuple[int, int, int]
 #: One drawable stem: start and end in pixels, its colour and its width.
@@ -577,3 +631,91 @@ def _draw_structure(
             vitality,
             leaf_color=EPIPHYTE_LEAF,
         )
+
+
+# --- The cross-section ---------------------------------------------------------
+#
+# Nothing below is reachable from render() and render() reaches nothing below:
+# the two produce different images from different inputs, and the cross-section
+# never modulates the plant's own picture the way moisture and root spread do.
+
+
+def _ring_color(ring: Ring) -> Color:
+    """The colour one finished year is drawn in.
+
+    A scarred year takes :data:`RING_SCAR` outright — the same grey the branches
+    that year killed are drawn in — because how *bad* it was beyond "it cost
+    wood" is already said by how narrow its band is. Every other year is placed
+    along the pale-to-dark ramp by its own absolute vitality, never by how it
+    compares to its neighbours: a life of uniformly middling years must look
+    middling all the way out, not be flattered by having nothing better to sit
+    beside.
+    """
+    if ring.scarred:
+        return RING_SCAR
+    return _lerp_color(RING_EARLY, RING_LATE, max(0.0, min(1.0, ring.vitality)))
+
+
+def _ring_outline(
+    center: tuple[float, float], radius: float, phases: tuple[float, ...]
+) -> list[tuple[float, float]]:
+    """Sample one ring boundary as a slightly irregular closed curve.
+
+    The wobble is multiplicative on ``radius`` and uses the same ``phases`` for
+    every boundary in one cross-section, so all the rings share one silhouette
+    and a thin ring can never cross the ring outside it however little width it
+    was given. The phases come from the plant's own seed, so a given trunk is
+    always the same shape between renders — the same rule the leaf placement and
+    the blossom rotations already follow.
+    """
+    cx, cy = center
+    points: list[tuple[float, float]] = []
+    for index in range(_RING_SAMPLES):
+        angle = 2.0 * math.pi * index / _RING_SAMPLES
+        wobble = sum(
+            amplitude * math.sin(frequency * angle + phase)
+            for (amplitude, frequency), phase in zip(_RING_WOBBLE, phases)
+        )
+        reach = radius * (1.0 + wobble)
+        points.append((cx + reach * math.cos(angle), cy + reach * math.sin(angle)))
+    return points
+
+
+def render_rings(rings: tuple[Ring, ...], seed: int) -> io.BytesIO:
+    """Render a trunk's cross-section to a PNG and return it as a ``BytesIO``.
+
+    ``rings`` are the finished years, oldest first, exactly as
+    :func:`structure.rings` returns them; ``seed`` is the plant's own, which
+    fixes the silhouette so the same trunk is recognisable year after year. The
+    bands are laid out by :func:`structure.ring_layout` — that is where a good
+    year becomes a wide band — and coloured by :func:`_ring_color`, which is
+    where a good year becomes dark, tight wood and a drought year becomes the
+    grey of the branches it killed.
+
+    Drawn from the bark inward, each ring a filled shape the next one paints
+    over, which is both the cheapest way to get exact contiguous bands and the
+    order the wood was actually laid down in reverse. Callers must not ask for
+    an empty cross-section: a plant with no finished year has no rings to show
+    and the caller decides that before ever getting here (see ``bot.py``'s
+    ``_cross_section``). The returned buffer is rewound to the start.
+    """
+    size = RING_SIZE * SUPERSAMPLE
+    image = Image.new("RGB", (size, size), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+
+    center = (size / 2.0, size / 2.0)
+    disc = size / 2.0 - _RING_PADDING
+    wood = disc * (1.0 - _RING_BARK_SHARE)
+    rng = random.Random(f"rings:{seed}")
+    phases = tuple(rng.uniform(0.0, 2.0 * math.pi) for _ in _RING_WOBBLE)
+
+    draw.polygon(_ring_outline(center, disc, phases), fill=RING_BARK)
+    for ring, (_, outer) in zip(reversed(rings), reversed(ring_layout(rings))):
+        draw.polygon(_ring_outline(center, wood * outer, phases), fill=_ring_color(ring))
+    draw.polygon(_ring_outline(center, wood * _RING_PITH_SHARE, phases), fill=RING_LATE)
+
+    image = image.resize((RING_SIZE, RING_SIZE), Image.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer

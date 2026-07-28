@@ -443,6 +443,97 @@ angelegt.
   fünftes diskretes Band, das den ansonsten stabilen Text mitwandern ließe
   (siehe „Tick-Stabilität"), oder eine Zahl — beides verboten.
 
+- **Phase 19 — Jahresringe (verdichtete Geschichte als Querschnitt) ✓:** die
+  erste Phase, die **gar kein Vitalitätssignal** hinzufügt, und deshalb
+  ausdrücklich **nicht** in der Signaltabelle unten geführt — sie steht wie
+  Phase 13 und 14 **quer** zur Signal-Roadmap, gehört aber anders als die beiden
+  weder zur Sprache noch zum Rahmen, sondern ist ein **zweites Bild**. Wo jedes
+  Signal die *gegenwärtig wachsende* Struktur formt, schaut diese Phase
+  ausschließlich zurück und rendert die Vergangenheit selbst: einen Querschnitt
+  durch den Stamm, ein Ring je abgeschlossenem Kalenderjahr, von der Mitte nach
+  außen gelesen.
+  **Die eigentliche Entwurfsfrage war die Datenlage, nicht das Zeichnen.** Kein
+  bestehender Speicher reicht weiter als Wochen zurück: `author_presence`,
+  `reactor_presence` und `voice_presence` zerfallen mit Wochen-Halbwertszeit,
+  `daily_activity` wird auf `RHYTHM_WINDOW_DAYS` (56 Tage) und
+  `thread_activity` auf `THREAD_RECENCY_SECONDS` (1 Woche) beschnitten, und
+  `plant_state` hält einen *aktuellen* Feuchtigkeitswert mit Zeitstempel, keine
+  Historie davon. Auch der Körper selbst taugt nicht als Ersatz — `birth_step`
+  datiert zwar jeden Knoten, aber `step_count` zählt nur Laufzeit und nicht
+  Realzeit (Ausfälle fehlen darin), und ein toter Knoten trägt den Zeitpunkt
+  seiner *Geburt*, nicht den seines Todes, sodass sich eine Dürre daraus
+  grundsätzlich nicht datieren lässt. Ein Jahr muss deshalb **inkrementell
+  angesammelt werden, während es passiert**, und wird nie nachträglich
+  rekonstruiert: `storage.py`s neue `yearly_ring`-Tabelle hält je
+  `(guild_id, year)` genau drei Zahlen — beobachtete Ticks, Summe der
+  Vitalität dieser Ticks, und wie viel Holz die Dürre in diesem Jahr getötet
+  hat. `record_year_tick` ist ein einziges akkumulierendes Upsert, also kann
+  ein Neustart an einer Jahresgrenze weder ein Jahr doppelt zählen noch eines
+  überspringen; ein Jahr, das der Bot nie gesehen hat, hat schlicht keine Zeile
+  und wird als „nicht beobachtet" gelesen statt als schlechtes Jahr.
+  **Was ein Ring kodiert:** `structure.rings` verdichtet die Jahreszeilen zu
+  `Ring(year, vitality, scarred)`. `vitality` ist die mittlere Feuchtigkeit
+  dieses Jahres — bewusst **absolut** statt gegen die anderen Jahre normiert,
+  damit ein durchgehend mittelmäßiges Leben auch mittelmäßig aussieht und ein
+  späteres gutes Jahr die Vergangenheit nicht nachträglich umfärbt; sie treibt
+  die *Farbe* (hell/offen → dunkel/dicht). Die *Breite* dagegen ist die einzige
+  relative Größe (`structure.ring_layout`): die Scheibe hat eine feste Größe,
+  die Jahre teilen sie unter sich auf, und genau das ist die Vergleichsoperation,
+  die das Lesen eines Querschnitts ausmacht. `RING_MIN_WIDTH_SHARE` verhindert,
+  dass ein einzelnes schlechtes Jahr zwischen guten auf einen unsichtbaren
+  Strich zusammenfällt — „das ging schlecht" darf nicht wie „das fand nicht
+  statt" aussehen. Ein Jahr zählt erst ab `RING_MIN_TICKS` (720 = 30 Tage)
+  beobachteter Ticks als Ring, und das laufende Jahr **nie** — ein Ring ist
+  fertiges Holz.
+  **Verhältnis zur bestehenden Dürre-Vernarbung (Phase 7/8):** kein zweiter
+  Dürre-Schwellwert und keine parallele Erkennung. `bot.py` liest
+  `structure.dead_node_count` vor und nach demselben `grow()`-Schritt; die
+  Differenz *ist* das, was `_dieback_step` in diesem Tick getötet hat. Ein Jahr
+  ist genau dann `scarred`, wenn es Holz gekostet hat, und `render.py` zeichnet
+  einen solchen Ring in exakt `DEAD_WOOD` — derselben Farbe, in der die toten
+  Äste jener Dürre im gewöhnlichen Bild stehen. Ein Ereignis, einmal gezählt,
+  aus zwei Blickwinkeln gezeigt.
+  **Auslöser:** kein neuer Command, und **kein gespeichertes Jubiläumsdatum**.
+  Die Tick-Zahl des laufenden Jahres in `yearly_ring` *ist* bereits, wie lange
+  dieses Jahr her ist, also gilt: solange sie ≤ `bot.RING_DISPLAY_TICKS` (24,
+  also ein realer Tag) ist, zeigt die lebende Nachricht den Querschnitt. Das
+  öffnet sich genau einmal je Kalenderjahr und schließt sich von selbst,
+  vollständig aus vorhandenem Zustand abgeleitet — dieselbe „der Zustand ist der
+  Schlüssel"-Eigenschaft, auf der die Tick-Stabilität der Sprache beruht.
+  Bewusst der Jahreswechsel und nicht das Keimungsjubiläum der Pflanze: Ringe
+  *sind* Kalenderjahre, der Jahreswechsel ist der einzige Moment, in dem neue
+  Information entsteht, ein Jubiläum im Juni würde ein bis zu ein Jahr veraltetes
+  Bild zeigen, und es bräuchte eine neue persistierte Spalte, um es überhaupt zu
+  erkennen. War der Bot beim Jahreswechsel unten, zeigt er den Querschnitt
+  verspätet statt gar nicht — die Aufzeichnung ist eine Woche zu spät mehr wert
+  als ein Jahr lang verpasst.
+  **Junge Pflanze:** kein abgeschlossenes, ausreichend beobachtetes Jahr → leeres
+  Tupel → gewöhnliches Bild. Es gibt ausdrücklich **keinen** halb erfundenen
+  ersten Teilring; ein Ring, den niemand messen konnte, würde mehr Geschichte
+  behaupten, als die Pflanze hat.
+  **Tod/Wiedergeburt: `yearly_ring` wird geleert**, zusammen mit den drei
+  Präsenztabellen und anders als `daily_activity`/`thread_activity`. Das ist die
+  wörtlichste Fassung dieser Unterscheidung im ganzen Projekt: ein Querschnitt
+  ist Holz, das *dieser* Stamm angelegt hat, und kein Stamm kann ein Jahr
+  enthalten, in dem es ihn nicht gab. Die Abstammung trägt ohnehin schon der
+  Footer (Generation, Samen, Epiphyte) — die Ringe müssen sie nicht doppeln.
+  **Präsentation:** eigener `LifeEvent.RINGS` mit eigenem Akzent
+  (`RINGS_ACCENT`, Nord-Snow — die einzige Farbe im Modul, die nichts Lebendiges
+  sein könnte: kein Blatt, kein Holz, keine Blüte, sondern eine Schnittfläche),
+  eigener Feldzeile (`Rings`, `Scar rings`, `Moisture` — die Feuchtigkeit
+  zuletzt, damit eine laufende Dürre am Ringtag sichtbar bleibt) und eigenen
+  Text-Pools in `voice.py`. In `life_event()` rangiert RINGS unter Tier 1
+  (Tod/Keimung/Wiedergeburt) und über allem anderen: würde er dem Wetter des
+  Tages weichen, kostete eine Dürre der ersten Januarwoche die Pflanze ihren
+  einzigen Auftritt für ein volles weiteres Jahr.
+  **Stimme:** `_RING_TITLES`/`_RINGS` liegen bewusst **außerhalb** von
+  `VoiceState`, wie schon `_GERMINATION`, und das ist eine
+  Tick-Stabilitäts-Entscheidung: ein Flag im Zustand würde am Ringtag *jede
+  andere* Zeile der Pflanze neu ziehen und die Rückschau als generellen
+  Stimmungsumschwung erscheinen lassen. Gewählt wird stattdessen aus
+  `blake2b(seed | Kategorie | Ringzahl)`. Keine Zeile darf die Zahl nennen — die
+  steht im sachlichen Instrumentenfeld daneben.
+
 **Offen:**
 
 - **Phase 10 (optional) — Die Umwelt:** Tages- und Jahreszeit-Tönung des
@@ -470,19 +561,24 @@ epiphyte/
 │                        #   (temporal_rhythm), Blütenintensität (_bloom_intensity),
 │                        #   Threads-Verzweigungstiefe (thread_qualifies, thread_depth),
 │                        #   Sprachaktivität (voice_is_audible, shared_voice_seconds,
-│                        #   voice_credits, root_spread — treibt nur render.py, nie grow())
-│                        #                            [Phase 5–9, 11, 12, 15, 16, 17]
+│                        #   voice_credits, root_spread — treibt nur render.py, nie grow());
+│                        #   Jahresringe (calendar_year, dead_node_count, YearRecord, Ring,
+│                        #   rings, ring_layout — kein Signal, nur ein zweites Bild)
+│                        #                        [Phase 5–9, 11, 12, 15, 16, 17, 19]
 ├── voice.py             # REINE LOGIK: die Stimme der Pflanze — VoiceState, Text-Pools,
-│                        #   deterministische Auswahl (siehe Persona-Bibel)  [Phase 13, 15]
+│                        #   deterministische Auswahl (siehe Persona-Bibel); Ring-Pools
+│                        #   liegen außerhalb von VoiceState            [Phase 13, 15, 19]
 ├── presentation.py      # REINE LOGIK: der Rahmen um die Pflanze — LifeEvent, Akzentfarbe,
 │                        #   Feldstruktur, Bildplatzierung, Footer (siehe „Präsentation");
-│                        #   liefert ein Panel, kein Embed                  [Phase 14, 15]
+│                        #   liefert ein Panel, kein Embed              [Phase 14, 15, 19]
 ├── render.py            # Struktur → PNG via Pillow (gekapselte I/O); Wurzelwerk und
-│                        #   Stammfuß-Verbreiterung aus root_spread   [Phase 2, erweitert 5–9, 15, 17]
+│                        #   Stammfuß-Verbreiterung aus root_spread; render_rings() als
+│                        #   zweiter Einstiegspunkt (Querschnitt statt Pflanze)
+│                        #                       [Phase 2, erweitert 5–9, 15, 17, 19]
 ├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
 │                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity,
-│                        #   reactor_presence, thread_activity, voice_presence
-│                        #                        [Phase 3, erweitert 5–9, 11, 12, 15, 16, 17]
+│                        #   reactor_presence, thread_activity, voice_presence, yearly_ring
+│                        #                    [Phase 3, erweitert 5–9, 11, 12, 15, 16, 17, 19]
 ├── tests/               # pytest, ausschließlich für die reine Logik                    [ab Phase 1]
 ├── requirements.txt
 ├── requirements-dev.txt # pytest, reine Dev-Abhängigkeit, getrennt von der Laufzeit      [Phase 1]
@@ -525,6 +621,16 @@ Damit die Lücke zwischen These und Implementierung nicht in Prosa untergeht:
 Jedes „entworfen, noch nicht gebaut"-Signal muss vor der Implementierung den
 Zulassungstest oben bestehen (keine privilegierten Intents, akkumuliert über
 echte Zeit, für eine Einzelperson nicht farmbar).
+
+**Die Jahresringe (Phase 19) fehlen in dieser Tabelle mit Absicht und gehören
+nie hinein.** Sie sind kein Signal: kein Discord-Ereignis speist sie, das nicht
+schon etwas anderes speist, sie erreichen `grow()` nicht, und kein Knoten der
+Pflanze wächst anders, ob es sie gibt oder nicht (`tests/test_rings.py` prüft
+beides über die Signaturen, nicht über Stichproben). Sie sind ein zweites *Bild*
+derselben Geschichte, die die Pflanze ohnehin durchlebt hat — rückwärts gelesen,
+wo jedes Signal oben vorwärts gelesen wird. Wer eine künftige Idee als „noch so
+eine Ringe-Sache" einordnen will, muss sie deshalb trotzdem durch den
+Zulassungstest schicken, sobald sie irgendetwas am Körper ändert.
 
 ## Reine Logik ⟷ I/O (das Herz der Struktur)
 
@@ -635,6 +741,7 @@ Poesie entschlüsseln müssen, um zu verstehen, was kaputt ist.
 | Überschrift und Text der lebenden Nachricht (Wachstum, Dürre, Tod, Wiedergeburt) | **gesprochen** |
 | `/plant`-Momentaufnahme (dasselbe Embed) | **gesprochen** |
 | Meilensteine — Blüte, Samen, Epiphyte | **gesprochen** |
+| Querschnitt/Jahresringe (einmal jährlich, ein Tag) | **gesprochen** — aber nie die Jahreszahl; die steht im Feld daneben |
 | Erste Keimung nach der Bestätigung | **gesprochen** (eine Zeile) + ein sachlicher Satz daneben |
 | Statuszeile des Bots (Presence) | **gesprochen**, aber rotierend (siehe unten) |
 | Fehlende Rechte, unerreichbarer Kanal, Kanal binden/umziehen | sachlich |
@@ -672,6 +779,18 @@ ein Neustart des Bots — lässt den Text unangetastet. Dafür muss **nichts**
 zusätzlich persistiert werden: der Zustand *ist* der Schlüssel. Einzige Ausnahme
 ist die Presence-Statuszeile, die die Pflanze nicht als Individuum spricht,
 sondern der Bot als Ganzes trägt; sie rotiert auf ihrem eigenen Timer.
+
+**Kategorien außerhalb von `VoiceState` (bewusst, nicht aus Bequemlichkeit):**
+der Keimungsgruß (Phase 13) und die Ring-Zeilen (Phase 19). Beide werden aus
+`blake2b(seed | Kategorie | eine Zahl)` gewählt statt aus dem Zustand — beim
+Keimungsgruß, weil es noch keinen gelebten Zustand zu lesen gibt, bei den Ringen
+aus **Tick-Stabilität**: ein „zeigt gerade seine Ringe"-Flag im Zustand würde am
+Ringtag *jede andere* Zeile mit neu ziehen und wieder zurück, sodass eine
+einmal-jährliche Rückschau wie ein allgemeiner Stimmungsumschwung wirkte. Für
+jede künftige einmalige oder befristete Äußerung gilt dieselbe Vorgabe: erst
+prüfen, ob sie in den Zustand *gehört*, und wenn nicht, sie so wie diese beiden
+außen anbinden — nie ein Feld in `VoiceState` aufnehmen, das aus `_index`
+wieder ausgeschlossen werden müsste.
 
 ### Komponierbarkeit
 
@@ -728,7 +847,13 @@ später zugelassene Vitalitätssignal.
    Blüte, Dürre, Durst) schlägt **was der Körper geworden ist** (Epiphyte) schlägt
    **den gewöhnlichen Tag** (üppig, stetig). Dauerhafte Zustände rangieren bewusst
    *unter* vorübergehenden: ein Baum, der zum Lebensraum geworden ist, zeigt
-   trotzdem seinen Durst, wenn er durstig ist.
+   trotzdem seinen Durst, wenn er durstig ist. Seit Phase 19 sitzt zwischen
+   Stufe eins und zwei **die ganze Aufzeichnung auf einmal** (`RINGS`): unter
+   Tod/Keimung/Wiedergeburt, weil eine Identitätsänderung dringender ist als
+   eine Rückschau — über allem übrigen, weil ein Ausweichen vor dem Wetter des
+   Tages die einmal-jährliche Rückschau für ein volles weiteres Jahr kosten
+   würde. Die gewöhnlichen Instrumente kommen stattdessen in der Ring-Feldzeile
+   mit, sodass die Gegenwart nie verdeckt wird.
 3. **Das Instrumenten-Feld öffnet und schließt sich mit der Pflanze.** Vier Felder
    bei Überfluss, drei im Normalfall, zwei bei Durst, eins in der Dürre, keins bei
    Keimung und Tod — an beiden Enden gibt es nichts zu messen, was die Pflanze
@@ -754,6 +879,9 @@ er ist ein Instrument, keine Rede.
 
 `presentation.py` rahmt das gerenderte PNG, es fasst es nie an. Alles innerhalb
 des Bildes — Körper, Palette, Laub, Blüten, Narben — gehört allein `render.py`.
+Das gilt seit Phase 19 auch für den Querschnitt: `presentation.py` entscheidet,
+*dass* die Nachricht von der Aufzeichnung handelt und welche Form sie annimmt,
+wie ein Ring aussieht, entscheidet allein `render.render_rings`.
 Die Bildplatzierung (`ImagePlacement.FULL` vs. `THUMBNAIL`) ist ausdrücklich
 erlaubt, weil sie nur den *Slot* in der Nachricht wählt: das PNG ist in beiden
 Fällen byte-identisch. Ein getönter oder gerahmter Rand um das fertige Bild wäre

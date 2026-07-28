@@ -32,7 +32,10 @@ most events, which is what lets the field rows differ so freely above it.
 
 The boundary this module must not cross: it frames the rendered image, it never
 touches it. Everything inside the PNG — the body, the palette, the foliage,
-the blossoms — belongs to :mod:`render` alone. See "Präsentation" in ``CLAUDE.md``.
+the blossoms — belongs to :mod:`render` alone. That holds for the cross-section
+too: :data:`LifeEvent.RINGS` decides that the message is about the record and
+what shape it takes, while what a ring looks like is ``render.render_rings``'s
+alone. See "Präsentation" in ``CLAUDE.md``.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ class LifeEvent(Enum):
 
     GERMINATION = "germination"
     REBIRTH = "rebirth"
+    RINGS = "rings"
     DIEBACK = "dieback"
     BLOOM = "bloom"
     DROUGHT = "drought"
@@ -146,6 +150,11 @@ FLOURISHING_ACCENT = 0x88C0D0
 #: Leaf green — the ordinary, most-seen state, and the baseline the others depart
 #: from.
 STEADY_ACCENT = 0xA3BE8C
+#: Nord snow storm — pale, dry, papery. The one event that is not a condition of
+#: the plant but a reading of its record, so it wears the only accent in this
+#: module that is not a colour anything living here could be: not leaf, not wood,
+#: not flower. It is the colour of a cut surface.
+RINGS_ACCENT = 0xD8DEE9
 
 #: The one fixed accent, worn by the operational surfaces (``/help`` and friends).
 #: Those deliberately do not track the plant: a moderator reading them is looking
@@ -176,6 +185,7 @@ BLOOM_LIFT_MODEST: float = 0.4
 _EVENT_ACCENTS: dict[LifeEvent, int] = {
     LifeEvent.GERMINATION: GERMINATION_ACCENT,
     LifeEvent.REBIRTH: REBIRTH_ACCENT,
+    LifeEvent.RINGS: RINGS_ACCENT,
     LifeEvent.DIEBACK: DIEBACK_ACCENT,
     LifeEvent.DROUGHT: DROUGHT_ACCENT,
     LifeEvent.THIRST: THIRST_ACCENT,
@@ -239,22 +249,36 @@ def _bloom_accent(seed: int, intensity: float) -> int:
     return _blend(color, SNOW, lift)
 
 
-def life_event(state: voice.VoiceState) -> LifeEvent:
+def life_event(state: voice.VoiceState, showing_rings: bool = False) -> LifeEvent:
     """Collapse the plant's condition into the one event that shapes its frame.
 
-    The order below *is* the design, and it reads in four tiers:
+    The order below *is* the design, and it reads in five tiers:
 
     1. **An ending or a beginning** — death, a founding germination, a successor's
        rebirth. The body's identity has changed, which outranks anything happening
        to it.
-    2. **What is happening to it** — dieback, a flowering, drought, thirst. All
+    2. **The whole record at once** — the cross-section, shown for one day a year
+       (see ``bot.py``'s ``_cross_section``). It ranks under the identity changes
+       and over everything else, and both halves of that are deliberate. Under,
+       because a plant that is dying or has just begun has a more urgent thing to
+       be than retrospective — though in practice the two cannot collide, since a
+       dead plant records no year and a successor's rings are wiped. Over, because
+       the alternative is worse than it looks: yielding to whatever the weather
+       happens to be doing on the turn of the year would cost the plant its one
+       showing for a whole further year, on the strength of a drought that will be
+       over in a week. The ordinary instruments come along inside the ring row
+       instead, so nothing about the present is hidden by showing the past.
+    3. **What is happening to it** — dieback, a flowering, drought, thirst. All
        four are time-limited and moving, including the bloom: it drains the very
        reserve that opened it and ends on its own, so it belongs with the changing
        states rather than with the standing ones.
-    3. **What it has become** — carrying an epiphyte. Permanent, and therefore
+    4. **What it has become** — carrying an epiphyte. Permanent, and therefore
        ranked *below* the passing states: a tree that has become habitat still
        shows its thirst when it is thirsty.
-    4. **The ordinary day** — flourishing, or simply steady.
+    5. **The ordinary day** — flourishing, or simply steady.
+
+    ``showing_rings`` defaults to ``False``, so a caller that knows nothing about
+    the cross-section resolves exactly the events this function always did.
     """
     if state.mood is voice.Mood.DEAD:
         return LifeEvent.DEATH
@@ -262,6 +286,8 @@ def life_event(state: voice.VoiceState) -> LifeEvent:
         return LifeEvent.GERMINATION
     if state.mood is voice.Mood.REBORN:
         return LifeEvent.REBIRTH
+    if showing_rings:
+        return LifeEvent.RINGS
     if state.mood is voice.Mood.PARCHED:
         return LifeEvent.DIEBACK
     if state.blooming:
@@ -416,11 +442,35 @@ def _epiphyte_field(plant: structure.Structure, seconds_per_step: float) -> Fiel
     return Field("Epiphyte", f"{days} days old" if days else "newly settled")
 
 
+def _rings_field(rings: tuple[structure.Ring, ...]) -> Field:
+    """How many finished years the cross-section is showing.
+
+    The plant is forbidden from counting its own years out loud (see the persona
+    bible), which is exactly what an instrument is for: the words say what the
+    wood means, this says how much of it there is.
+    """
+    count = len(rings)
+    return Field("Rings", "1 year" if count == 1 else f"{count} years")
+
+
+def _scar_rings_field(rings: tuple[structure.Ring, ...]) -> Field:
+    """Which of those years cost the plant wood — named, since a ring has a date.
+
+    The one instrument in this module that says something the picture cannot: a
+    grey band is legible as *a* bad year, but not as *which*. Reads the same
+    ``scarred`` flag :func:`structure.rings` sets from the Phase 7 dieback, so
+    this can never disagree with the picture beside it.
+    """
+    scarred = [ring.year for ring in rings if ring.scarred]
+    return Field("Scar rings", " · ".join(str(year) for year in scarred) if scarred else "none")
+
+
 def _fields(
     event: LifeEvent,
     plant: structure.Structure,
     moisture_value: float,
     seconds_per_step: float,
+    rings: tuple[structure.Ring, ...] = (),
 ) -> tuple[Field, ...]:
     """Return the instrument row for one event — its own, not a shared template.
 
@@ -430,9 +480,20 @@ def _fields(
     drought a single number, and a germinating or dead one none at all — at those
     two ends there is nothing to measure that the plant has not already said
     better itself.
+
+    The cross-section is the one event whose row is not about the present at all
+    — two readings of the record, and the moisture last rather than first, so a
+    drought running on the day the rings are shown is still on the panel without
+    displacing what the panel is for.
     """
     if event is LifeEvent.GERMINATION:
         return ()
+    if event is LifeEvent.RINGS:
+        return (
+            _rings_field(rings),
+            _scar_rings_field(rings),
+            _moisture_field(moisture_value),
+        )
     if event is LifeEvent.REBIRTH:
         return (_lineage_field(plant),)
     if event is LifeEvent.DEATH:
@@ -533,7 +594,10 @@ def _promoted_milestone(event: LifeEvent, state: voice.VoiceState) -> tuple[Fiel
 
 
 def compose(
-    plant: structure.Structure, moisture_value: float, seconds_per_step: float
+    plant: structure.Structure,
+    moisture_value: float,
+    seconds_per_step: float,
+    rings: tuple[structure.Ring, ...] = (),
 ) -> Panel:
     """Frame a plant: its event, its colour, its words and the shape they sit in.
 
@@ -541,23 +605,34 @@ def compose(
     writes what the plant says, only where it lands. ``seconds_per_step`` is the
     adapter's tick interval, passed in rather than read from a clock or a config so
     the whole composition stays a pure function of the plant.
+
+    ``rings`` is non-empty only while the plant's cross-section is being shown —
+    one day a year, decided by the adapter (see ``bot.py``'s ``_cross_section``),
+    never by anything here. When it is, the plant speaks about its record instead
+    of its condition and the frame follows; when it is not, which is every other
+    day, this function behaves exactly as it did before rings existed. That the
+    caller decides is the point: the *shape* of a retrospective is this module's
+    business, and which day it falls on is not.
     """
     state = voice.read_state(plant, moisture_value)
-    event = life_event(state)
+    event = life_event(state, showing_rings=bool(rings))
     promoted, remaining = _promoted_milestone(event, state)
 
-    body = [voice.passage(state)]
+    if event is LifeEvent.RINGS:
+        title, body = voice.ring_title(plant.seed, len(rings)), [voice.ring_passage(plant.seed, len(rings))]
+    else:
+        title, body = voice.title(state), [voice.passage(state)]
     if remaining:
         body.append("\n".join(remaining))
 
-    fields = _fields(event, plant, moisture_value, seconds_per_step)
+    fields = _fields(event, plant, moisture_value, seconds_per_step, rings)
     if promoted is not None:
         fields = (promoted, *fields)
 
     return Panel(
         event=event,
         accent=accent(event, plant.seed, plant.stats.bloom_intensity),
-        title=voice.title(state),
+        title=title,
         body="\n\n".join(body),
         fields=fields,
         image=_image_placement(event),

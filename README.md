@@ -131,6 +131,18 @@ of its own.
   plant shows a full row of readings, a plant in drought shows a single number,
   and a dead one shows nothing but the bare grey body. There is nothing to
   configure here either — like the plant itself, the frame is derived, not chosen.
+- **Once a year, the rings** — for one day when a calendar year turns, the plant
+  stops showing itself and shows a cross-section of its own trunk instead: one
+  ring per finished year, read from the centre outward. A year the server spent
+  alive is a wide, dark band; a quiet stretch is a thin, pale one; a year a
+  drought cost the plant wood for good is a grey scar ring — the same drought
+  that left the bare grey branches on the ordinary picture, seen from the other
+  angle. It is not a sixth thing that shapes the plant and it changes nothing
+  about how it grows: it is the same history the plant has already lived
+  through, read backward for a day. The year in progress is never drawn, because
+  a ring is finished wood; a plant younger than its first full year simply shows
+  itself as usual, and a new generation starts its rings over, since no trunk can
+  contain a year in which it did not exist.
 - **Individuality** — every server's plant grows from its own random seed: a
   genome fixing its branching angles, bushiness, vigour, foliage and the colour it
   flowers in, so no two servers ever grow the same plant, and a seed carries those

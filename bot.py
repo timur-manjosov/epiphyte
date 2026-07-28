@@ -60,6 +60,17 @@ reaction warmth are) never reaches ``structure.grow`` at all: it is handed to
 base. That is what makes it independent of breadth, rhythm and thread depth by
 construction rather than by calibration — it shares no term with any of them.
 
+Phase 19 adds no signal at all, and is the first phase that does not: it adds a
+second *picture*. ``advance_life`` folds each tick into its calendar year's
+record (``_record_year``) — the observed ticks, the vitality they ran at, and the
+wood that tick's dieback killed — because none of the tables above reach back
+further than weeks and a tree ring needs a whole finished year. Once a year, for
+one day, ``_cross_section`` hands those finished years to ``render.render_rings``
+and the living message shows the inside of the trunk instead of the plant. The
+window needs no stored anniversary: the current year's own tick count is how long
+ago that year turned. Nothing here touches growth, moisture or any signal — it is
+the same data the plant already lived through, read backward.
+
 Everything the plant says about itself, it says in the first person: the living
 message's heading and text are spoken by ``voice``, which reads them from the
 body and the moisture. Where those words land — the accent colour, which
@@ -126,6 +137,24 @@ AUTHOR_PRESENCE_PRUNE_FLOOR = 0.01
 #: Seconds in a whole day — the bucket size structure.day_bucket() groups
 #: messages into for structure.temporal_rhythm().
 DAY_SECONDS = 24 * 60 * 60
+
+#: How many ticks after a calendar year turns the plant shows its cross-section
+#: instead of itself. Twenty-four — one real day at one tick an hour.
+#:
+#: This constant is also the whole trigger, and it needs no stored anniversary
+#: date to be one: ``yearly_ring`` counts the ticks observed in each year, so the
+#: current year's count *is* how long ago that year began, and a window defined
+#: as "while that count is still small" opens exactly once per year and closes by
+#: itself. Nothing has to be persisted to remember whether the cross-section has
+#: already been shown — the same "the state is the key" property the plant's
+#: words rely on (see ``CLAUDE.md``, "Tick-Stabilität").
+#:
+#: A bot that was down when the year turned shows it late rather than not at all,
+#: because the count starts at the first tick actually observed. That is the
+#: deliberate trade: the record is worth more shown a week late than missed for a
+#: year. A day is long enough that nobody who opens the server that day misses
+#: it, and short enough that it never becomes the plant's normal face.
+RING_DISPLAY_TICKS = 24
 
 #: Attachment filename referenced by the embed's image.
 PLANT_IMAGE_FILENAME = "plant.png"
@@ -207,7 +236,11 @@ def _audible_channel_id(state: discord.VoiceState, afk_channel_id: int | None) -
     return channel.id if audible else None
 
 
-def build_plant_embed(moisture_value: float, plant: structure.Structure) -> discord.Embed:
+def build_plant_embed(
+    moisture_value: float,
+    plant: structure.Structure,
+    rings: tuple[structure.Ring, ...] = (),
+) -> discord.Embed:
     """Build the embed framing the plant image, its words and its instruments.
 
     Every decision worth making here — the accent colour, which instruments are
@@ -216,8 +249,13 @@ def build_plant_embed(moisture_value: float, plant: structure.Structure) -> disc
     testable without Discord. This function is only the pour: it turns that
     :class:`presentation.Panel` into the Discord object it was designed for and
     knows nothing else.
+
+    ``rings`` is non-empty only during the once-a-year window in which the
+    attached image is the plant's cross-section rather than the plant (see
+    :meth:`EpiphyteClient._cross_section`); the frame that goes around it is
+    :mod:`presentation`'s decision as usual, not this function's.
     """
-    panel = presentation.compose(plant, moisture_value, TICK_INTERVAL_SECONDS)
+    panel = presentation.compose(plant, moisture_value, TICK_INTERVAL_SECONDS, rings)
     embed = discord.Embed(title=panel.title, description=panel.body, color=panel.accent)
     for field in panel.fields:
         embed.add_field(name=field.name, value=field.value, inline=field.inline)
@@ -272,7 +310,12 @@ def build_help_pages() -> list[discord.Embed]:
         description=(
             "Growth, blooming, seeding and the rare secondary epiphyte all happen by "
             "themselves as the plant lives — none of it can be triggered on demand. "
-            "Check back after some real activity, not right after a test message."
+            "Check back after some real activity, not right after a test message.\n\n"
+            "Once a real year has gone by, the plant spends one day showing a "
+            "cross-section of its trunk instead of itself: one ring per finished "
+            "year, wide and dark where the server was alive, thin and pale where it "
+            "was quiet, grey where a drought cost it wood for good. It comes around "
+            "by itself, like everything else here."
         ),
         color=HELP_EMBED_COLOR,
     )
@@ -410,6 +453,11 @@ class EpiphyteClient(discord.Client):
         #: whole credit, carried forward so several short calls add up the same
         #: as one long one (see ``structure.voice_credits``).
         self._voice_seconds: dict[tuple[int, int], float] = {}
+        #: Per guild, per calendar year: that year's accumulated record. The only
+        #: thing here that reaches back further than weeks, and the only reason
+        #: the cross-section can exist at all; see ``_record_year``. Never feeds
+        #: growth — ``advance_life`` writes to it and never reads it.
+        self._yearly: dict[int, dict[int, structure.YearRecord]] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
@@ -430,6 +478,7 @@ class EpiphyteClient(discord.Client):
         self._reactor_presence = self._storage.load_all_reactor_presence()
         self._thread_activity = self._storage.load_all_thread_activity()
         self._voice_presence = self._storage.load_all_voice_presence()
+        self._yearly = self._storage.load_all_yearly_rings()
 
         guild_id = os.getenv(GUILD_ENV)
         if guild_id:
@@ -937,6 +986,83 @@ class EpiphyteClient(discord.Client):
             async with self._db_lock:
                 await asyncio.to_thread(self._storage.clear_voice_presence, guild_id)
 
+    # --- the record of finished years (the cross-section) ----------------------
+
+    async def _record_year(
+        self, guild_id: int, now: float, moisture_value: float, wood_lost: int
+    ) -> None:
+        """Fold this tick into its calendar year's running record.
+
+        The one write in this class that is kept for years rather than weeks, and
+        the reason is that nothing else is: the presence tables decay, the daily
+        and thread tables are pruned to their own windows, and the plant's
+        moisture is a single current value. A tree ring needs a whole finished
+        year, so a year is accumulated a tick at a time while it happens — there
+        is no way to reconstruct one afterwards from records nobody kept, and
+        this deliberately never tries.
+
+        ``moisture_value`` is the vitality the growth step actually ran at and
+        ``wood_lost`` how many nodes that same step's dieback killed, so the
+        record is a byproduct of the tick rather than a second measurement of it.
+        The accumulation itself is one atomic upsert (see
+        :meth:`storage.Storage.record_year_tick`): a restart or a crash on either
+        side of a year boundary can lose at most the tick in flight, and can
+        neither double-count a tick nor invent one.
+        """
+        year = structure.calendar_year(now)
+        guild_years = self._yearly.setdefault(guild_id, {})
+        record = guild_years.get(year)
+        guild_years[year] = structure.YearRecord(
+            year=year,
+            ticks=(record.ticks if record else 0) + 1,
+            moisture_sum=(record.moisture_sum if record else 0.0) + moisture_value,
+            wood_lost=(record.wood_lost if record else 0) + wood_lost,
+        )
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(
+                    self._storage.record_year_tick, guild_id, year, moisture_value, wood_lost
+                )
+
+    async def _clear_yearly_rings(self, guild_id: int) -> None:
+        """Wipe a guild's year records when its successor germinates.
+
+        Rings side with the three presence tables rather than with the
+        daily-activity and thread counters, and the reason is more literal here
+        than anywhere else: a cross-section is wood *this* trunk laid down, and no
+        trunk can contain a year in which it did not exist. A successor begins
+        with no rings and earns its first at the end of its first real year, the
+        same way it begins with no crowd and no root system.
+        """
+        self._yearly.pop(guild_id, None)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.clear_yearly_rings, guild_id)
+
+    def _cross_section(self, guild_id: int, now: float) -> tuple[structure.Ring, ...]:
+        """Return the rings to show right now, or empty for the rest of the year.
+
+        The whole trigger, and it stores nothing to be one. The current year's
+        ``ticks`` counts how many ticks of that year the bot has observed, so
+        while it is still at or below :data:`RING_DISPLAY_TICKS` the year has
+        only just turned — that is the window, it opens exactly once per calendar
+        year, and it closes on its own. A plant with no finished year on record
+        (a young one, or one whose germination year began too late to be
+        measurable) yields an empty tuple and simply shows itself as usual: there
+        is no partial, half-invented first ring, because a ring nobody could have
+        measured would claim more history than the plant has.
+
+        A pure read like :meth:`_voice_activity`, and for the same reason — the
+        living message and ``/plant`` both call it outside the tick, so it must
+        never write.
+        """
+        year = structure.calendar_year(now)
+        records = self._yearly.get(guild_id, {})
+        current = records.get(year)
+        if current is None or current.ticks > RING_DISPLAY_TICKS:
+            return ()
+        return structure.rings(records.values(), year)
+
     async def _clear_author_presence(self, guild_id: int) -> None:
         """Wipe a guild's recorded voices when its successor germinates.
 
@@ -1035,6 +1161,7 @@ class EpiphyteClient(discord.Client):
                 await self._clear_author_presence(guild_id)
                 await self._clear_reactor_presence(guild_id)
                 await self._clear_voice_presence(guild_id)
+                await self._clear_yearly_rings(guild_id)
                 await self._reclaim_after_reseed()
             else:
                 await self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
@@ -1053,9 +1180,21 @@ class EpiphyteClient(discord.Client):
         grown = structure.grow(
             state.structure, genome, current, 1, breadth, rhythm, reaction_warmth, thread_depth
         )
+        # Fold this step into its calendar year's record — the wood a ring will
+        # eventually be drawn from. `wood_lost` is the dieback this very step
+        # performed, read off the two bodies rather than re-derived from a second
+        # drought threshold of its own, so a scar ring and the grey branch it
+        # corresponds to are one event: see structure.rings(). Nothing read back
+        # from this ever reaches growth.
+        await self._record_year(
+            guild_id,
+            now,
+            current,
+            structure.dead_node_count(grown) - structure.dead_node_count(state.structure),
+        )
         # Re-read rather than reuse the `state` snapshot from the top of this
-        # method: the four lookups and the prune above each await real I/O, and
-        # a message's watering (water_plant, atomic in its own right — see
+        # method: the lookups, the prune and the year record above each await real
+        # I/O, and a message's watering (water_plant, atomic in its own right — see
         # _store's docstring) can land in that window. Storing `current` — the
         # decay computed from the pre-watering snapshot — on top of that would
         # silently discard the watering. Decaying the *latest* moisture to
@@ -1246,24 +1385,39 @@ class EpiphyteClient(discord.Client):
         return channel if isinstance(channel, discord.TextChannel) else None
 
     async def _render_bytes(
-        self, plant: structure.Structure, moisture_value: float, voice_activity: float = 0.0
+        self,
+        plant: structure.Structure,
+        moisture_value: float,
+        voice_activity: float = 0.0,
+        rings: tuple[structure.Ring, ...] = (),
     ) -> bytes:
-        """Render a structure to PNG bytes off the event loop (Pillow is sync).
+        """Render the image the message currently calls for, off the event loop.
 
-        ``moisture_value`` is the vitality that modulates the plant's look and
-        ``voice_activity`` the guild's current voice reading, which modulates its
-        root system the same way; the genome is recomputed from the seed so the
-        render matches this individual.
+        Normally that is the plant: ``moisture_value`` is the vitality that
+        modulates its look and ``voice_activity`` the guild's current voice
+        reading, which modulates its root system the same way; the genome is
+        recomputed from the seed so the render matches this individual.
+
+        For the one day a year ``rings`` is non-empty (see
+        :meth:`_cross_section`) it is the trunk's cross-section instead — a
+        different picture from different inputs, not a variation on the plant.
+        The two are alternatives rather than layers, which is why this chooses
+        between two render functions rather than passing rings into one.
         """
-        genome = structure.genome_from_seed(plant.seed)
-        buffer = await asyncio.to_thread(
-            render.render, plant, moisture_value, genome, voice_activity
-        )
+        if rings:
+            buffer = await asyncio.to_thread(render.render_rings, rings, plant.seed)
+        else:
+            genome = structure.genome_from_seed(plant.seed)
+            buffer = await asyncio.to_thread(
+                render.render, plant, moisture_value, genome, voice_activity
+            )
         return buffer.getvalue()
 
-    def _embed_for(self, state: storage.GuildState) -> discord.Embed:
+    def _embed_for(
+        self, state: storage.GuildState, rings: tuple[structure.Ring, ...] = ()
+    ) -> discord.Embed:
         """Build the living message's embed from a guild's current stored state."""
-        return build_plant_embed(state.moisture, state.structure)
+        return build_plant_embed(state.moisture, state.structure, rings)
 
     async def _mark_channel_unreachable(self, state: storage.GuildState) -> None:
         """Record that the living message currently cannot be delivered, if not already.
@@ -1339,10 +1493,12 @@ class EpiphyteClient(discord.Client):
             if channel is None:
                 await self._mark_channel_unreachable(state)
                 return  # channel unreachable right now; the next tick will retry
+            now = time.time()
+            rings = self._cross_section(guild_id, now)
             png = await self._render_bytes(
-                state.structure, state.moisture, self._voice_activity(guild_id, time.time())
+                state.structure, state.moisture, self._voice_activity(guild_id, now), rings
             )
-            embed = self._embed_for(state)
+            embed = self._embed_for(state, rings)
 
             if state.message_id is not None:
                 try:
@@ -1394,12 +1550,14 @@ class EpiphyteClient(discord.Client):
                 return
             if state.message_id is not None:
                 await self._delete_message(channel, state.message_id)
+            now = time.time()
+            rings = self._cross_section(guild_id, now)
             png = await self._render_bytes(
-                state.structure, state.moisture, self._voice_activity(guild_id, time.time())
+                state.structure, state.moisture, self._voice_activity(guild_id, now), rings
             )
             try:
                 message = await channel.send(
-                    embed=self._embed_for(state),
+                    embed=self._embed_for(state, rings),
                     file=discord.File(io.BytesIO(png), filename=PLANT_IMAGE_FILENAME),
                 )
             except discord.Forbidden:
@@ -1509,15 +1667,16 @@ async def plant(interaction: discord.Interaction) -> None:
 
     now = time.time()
     display_moisture = moisture.decay(state.moisture, now - state.last_update)
-    genome = structure.genome_from_seed(state.structure.seed)
-    buffer = await asyncio.to_thread(
-        render.render,
-        state.structure,
-        display_moisture,
-        genome,
-        client._voice_activity(guild_id, now),
+    # Deliberately the same cross-section reading the living message uses: on the
+    # one day a year the record is on show, a snapshot that quietly showed the
+    # plant instead would have the two surfaces disagreeing about what the server
+    # is currently being shown.
+    rings = client._cross_section(guild_id, now)
+    png = await client._render_bytes(
+        state.structure, display_moisture, client._voice_activity(guild_id, now), rings
     )
-    embed = build_plant_embed(display_moisture, state.structure)
+    buffer = io.BytesIO(png)
+    embed = build_plant_embed(display_moisture, state.structure, rings)
     content = None
     if state.channel_unreachable_since is not None:
         content = await client._channel_trouble_message(state.channel_id)

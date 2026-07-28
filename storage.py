@@ -61,6 +61,22 @@ produces, while all three presence tables describe *people currently around a
 particular plant*, which is this life's own to earn. Roots make that the most
 literal of the three — a successor cannot inherit its predecessor's root system,
 and having germinated as a single sprout it has no trunk to flare in any case.
+
+A seventh table, ``yearly_ring``, is the only one here that keeps anything for
+longer than weeks, and it exists because nothing else does. Every table above is
+a *recent* reading — the presence tables decay within weeks, ``daily_activity``
+is pruned to :data:`structure.RHYTHM_WINDOW_DAYS`, ``thread_activity`` to
+:data:`structure.THREAD_RECENCY_SECONDS`, and ``plant_state`` holds a current
+moisture with a timestamp to decay it from, not a history of it. A tree ring
+needs a whole finished year, so a whole finished year has to be accumulated as
+it happens; it cannot be reconstructed afterwards from data nobody kept. One row
+per ``(guild_id, year)`` holds the coarsest thing that suffices: how many ticks
+of that year were observed, the sum of the vitality those ticks ran at, and how
+much wood that year's dieback killed. It is never pruned — fifty years of life
+is fifty rows — and it *is* wiped on rebirth, alongside the three presence
+tables and unlike the two counter tables: rings are wood this particular trunk
+laid down, and no cross-section can contain a year in which this body did not
+exist. See :func:`structure.rings`.
 """
 
 from __future__ import annotations
@@ -208,6 +224,18 @@ class Storage:
                 weight     REAL    NOT NULL,
                 last_seen  REAL    NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS yearly_ring (
+                guild_id     INTEGER NOT NULL,
+                year         INTEGER NOT NULL,
+                ticks        INTEGER NOT NULL,
+                moisture_sum REAL    NOT NULL,
+                wood_lost    INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, year)
             )
             """
         )
@@ -616,6 +644,70 @@ class Storage:
             """,
             (guild_id, guild_id, oldest_kept),
         )
+        self._connection.commit()
+
+    def load_all_yearly_rings(self) -> dict[int, dict[int, structure.YearRecord]]:
+        """Load every guild's accumulated calendar years, keyed by guild then year.
+
+        Feeds :func:`structure.rings`. Unlike every other loader here the values
+        are already the pure module's own dataclass rather than raw tuples: a
+        year record needs no decaying, no zero-filling and no per-thread
+        aggregation before it is usable, so there is nothing for the caller to
+        assemble.
+        """
+        rows = self._connection.execute(
+            "SELECT guild_id, year, ticks, moisture_sum, wood_lost FROM yearly_ring"
+        ).fetchall()
+        result: dict[int, dict[int, structure.YearRecord]] = {}
+        for row in rows:
+            result.setdefault(row["guild_id"], {})[row["year"]] = structure.YearRecord(
+                year=row["year"],
+                ticks=row["ticks"],
+                moisture_sum=row["moisture_sum"],
+                wood_lost=row["wood_lost"],
+            )
+        return result
+
+    def record_year_tick(
+        self, guild_id: int, year: int, moisture: float, wood_lost: int
+    ) -> None:
+        """Fold one metabolic tick into its calendar year's running record.
+
+        Written as an accumulating upsert rather than a read-modify-write, so
+        the year's totals are advanced by exactly one tick's worth per call
+        whatever else is happening: there is no window in which a restart, a
+        crash between two statements or a year boundary arriving mid-tick could
+        double-count a tick or skip one. A year that has never been ticked
+        simply has no row, and :func:`structure.rings` reads that as "not
+        observed" rather than as a bad year.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO yearly_ring (guild_id, year, ticks, moisture_sum, wood_lost)
+            VALUES (:guild_id, :year, 1, :moisture, :wood_lost)
+            ON CONFLICT(guild_id, year) DO UPDATE SET
+                ticks        = ticks + 1,
+                moisture_sum = moisture_sum + :moisture,
+                wood_lost    = wood_lost + :wood_lost
+            """,
+            {
+                "guild_id": guild_id,
+                "year": year,
+                "moisture": moisture,
+                "wood_lost": wood_lost,
+            },
+        )
+        self._connection.commit()
+
+    def clear_yearly_rings(self, guild_id: int) -> None:
+        """Delete every year record for a guild — a successor's trunk has no rings.
+
+        Called with :meth:`clear_author_presence` and its two siblings when a
+        dead plant's successor germinates. See the module docstring for why
+        rings side with the presence tables rather than with ``daily_activity``
+        and ``thread_activity``.
+        """
+        self._connection.execute("DELETE FROM yearly_ring WHERE guild_id = ?", (guild_id,))
         self._connection.commit()
 
     def vacuum(self) -> None:
