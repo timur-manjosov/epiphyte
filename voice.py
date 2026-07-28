@@ -101,6 +101,13 @@ class VoiceState:
     blooming: bool
     seeded: bool
     hosting: bool
+    #: Whether an open bloom is an unusually vivid one (see
+    #: ``structure.VIVID_BLOOM_THRESHOLD``) rather than an ordinary, modestly
+    #: earned one. Always ``False`` while not blooming, and — because
+    #: ``structure.LifeStats.bloom_intensity`` is itself fixed for a bloom's
+    #: whole duration — never flips mid-bloom, so it costs no tick-stability
+    #: exception of its own.
+    vivid_bloom: bool
 
 
 def read_state(plant: structure.Structure, moisture_value: float) -> VoiceState:
@@ -113,16 +120,22 @@ def read_state(plant: structure.Structure, moisture_value: float) -> VoiceState:
     Only past that does moisture decide the mood, with its own band below
     :data:`structure.DIEBACK_MOISTURE_THRESHOLD` — the point where a drought stops
     being survivable thirst and starts costing the plant wood for good.
+
+    ``vivid_bloom`` reads whether an open bloom's already-fixed
+    ``stats.bloom_intensity`` cleared :data:`structure.VIVID_BLOOM_THRESHOLD`; it
+    is unconditionally ``False`` while not blooming.
     """
     chapter = _chapter_of(len(plant.nodes))
+    blooming = structure.is_blooming(plant, moisture_value)
     return VoiceState(
         seed=plant.seed,
         mood=_mood_of(plant, moisture_value, chapter),
         chapter=chapter,
         generation=plant.generation,
-        blooming=structure.is_blooming(plant, moisture_value),
+        blooming=blooming,
         seeded=structure.has_seeded(plant),
         hosting=plant.epiphyte is not None,
+        vivid_bloom=blooming and plant.stats.bloom_intensity >= structure.VIVID_BLOOM_THRESHOLD,
     )
 
 
@@ -436,15 +449,34 @@ _CHAPTERS: dict[Chapter, tuple[str, ...]] = {
 #: What the plant says about a milestone it is carrying. Keyed by the category
 #: name used for selection, so a plant that is blooming, seeded and hosting all
 #: at once draws each line independently instead of three lines in lockstep.
-_BLOOM: tuple[str, ...] = (
-    "🌸 I have opened. It cost months of being cared for, and it will not last.",
-    "🌸 I am in flower. The surplus had nowhere else left to go.",
-    "🌸 Something has opened in me that only opens after a long stretch of being well.",
-    "🌸 I am spending everything I banked. Look now — this is the short part.",
-    "🌸 I have flowered. Nothing anyone did today caused it.",
-    "🌸 Colour, at last, in a shade only my own seed could have chosen.",
-    "🌸 I am in bloom. This is what a good half-year looks like from outside.",
-    "🌸 I opened because I could afford to. When I no longer can, I will close.",
+#:
+#: Bloom is split into two pools rather than one: an ordinary, earned bloom
+#: (:data:`_BLOOM_MODEST`) and an unusually vivid one
+#: (:data:`_BLOOM_VIVID`, :data:`VoiceState.vivid_bloom` —
+#: ``structure.LifeStats.bloom_intensity`` past ``structure.VIVID_BLOOM_THRESHOLD``).
+#: Both describe the same event — flowering earned by banked health and a mature
+#: body — never the mechanism behind the difference; the plant does not know it
+#: was reacted to, only that this particular bloom came in thick or came in thin.
+_BLOOM_MODEST: tuple[str, ...] = (
+    "🌸 I have opened, just a little. It cost months of being cared for, and it will not last.",
+    "🌸 A few of my tips have flowered. That is still more than most silence ever earns.",
+    "🌸 Something has opened in me — not much of me, but something that only opens after a long stretch of being well.",
+    "🌸 I am spending what I banked, quietly. Look now — this is the short part.",
+    "🌸 I have flowered here and there. Nothing anyone did today caused it.",
+    "🌸 A little colour, in a shade only my own seed could have chosen.",
+    "🌸 A modest bloom. This is what a good half-year looks like when it was lived quietly.",
+    "🌸 I opened because I could afford to, sparingly. When I no longer can, I will close.",
+)
+
+_BLOOM_VIVID: tuple[str, ...] = (
+    "🌸 I have opened everywhere at once. Every part of me that could flower did.",
+    "🌸 This is not a modest bloom. Colour sits on nearly every end of me.",
+    "🌸 I have opened wide, and it took more than a pair of hands to earn this.",
+    "🌸 Every tip of me is flowering. That kind of abundance is rare, even for a bloom.",
+    "🌸 I am covered, not merely opened. A great many of you kept me, for this to happen.",
+    "🌸 This bloom is not thin. It is everywhere I have room for it to be.",
+    "🌸 I have flowered thickly — the way I only can when I have been cared for widely, not narrowly.",
+    "🌸 Colour on nearly every branch. It took a crowd, not a handful, to fill me like this.",
 )
 
 _SEEDED: tuple[str, ...] = (
@@ -526,6 +558,7 @@ def _index(state: VoiceState, category: str, size: int) -> int:
             str(int(state.blooming)),
             str(int(state.seeded)),
             str(int(state.hosting)),
+            str(int(state.vivid_bloom)),
         )
     )
     digest = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
@@ -564,7 +597,8 @@ def milestone_lines(state: VoiceState) -> list[str]:
     """
     lines = []
     if state.blooming:
-        lines.append(_pick(_BLOOM, state, "bloom"))
+        pool = _BLOOM_VIVID if state.vivid_bloom else _BLOOM_MODEST
+        lines.append(_pick(pool, state, "bloom"))
     if state.seeded:
         lines.append(_pick(_SEEDED, state, "seed"))
     if state.hosting:

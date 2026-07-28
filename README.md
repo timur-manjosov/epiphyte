@@ -69,6 +69,16 @@ of its own.
   by itself and the next one has to be earned again: a season, not a switch. A
   bloom that lasts long enough sets seed, and those pale seed heads stay on the
   body long after the flowers are gone.
+- **A bloom's own vividness** — how a given bloom looks isn't fixed either.
+  Whether a bloom happens at all still depends only on banked health and a
+  mature body, but how vivid and abundant it opens — a scattering of pale
+  flowers versus colour on nearly every branch — reflects how broadly, not how
+  loudly, the room has reacted to what's said, sampled once as the bloom
+  begins and held for its whole run. A single account reacting to its own
+  messages counts for nothing; a handful of people trading reactions with each
+  other only ever counts as that same handful, no matter how often — only
+  reactions from a genuinely broad, sustained set of people brighten a bloom,
+  and a bloom nobody reacted to still opens, just modestly.
 - **An epiphyte of its own** — a tree that has grown very old and very large and
   flowered several times over can take on the thing this project is named after: a
   second, far smaller plant that settles on one of its old limbs and grows there,

@@ -279,6 +279,31 @@ angelegt.
   `discord.Embed`. Verbindlich dokumentiert unter „Präsentation"; diese Phase
   steht wie Phase 13 **quer** zur Signal-Roadmap und ändert weder Mechanik noch
   Rendering noch ein Vitalitätssignal — nur, wie das Gesagte dasteht.
+- **Phase 15 — Reaktionen (Blütenintensität) ✓:** dritte Vitalitätsdimension,
+  aber anders geformt als Autorenbreite und Rhythmus: `structure.
+  _bloom_intensity` wird nicht laufend fortgeschrieben, sondern genau einmal
+  gelesen — auf dem Schritt, an dem eine bereits durch Phase 9s Reserve-/
+  Reifegrenze verdiente Blüte beginnt — und bleibt danach für die gesamte
+  Blütendauer fest in `LifeStats.bloom_intensity`. Ob überhaupt geblüht wird,
+  bleibt allein Phase 9s Sache; Reaktionen entscheiden nur, wie üppig und
+  gesättigt diese eine Blüte ausfällt (`render.py`s `_draw_blossom`: Anteil
+  blühender Triebspitzen und Blütengröße; `presentation.py`s `_bloom_accent`:
+  Blassheit Richtung Schnee). Die zugrunde liegende Reaktionswärme wird über
+  `structure.author_breadth` gelesen — bewusst wiederverwendet statt einer
+  zweiten Kalibrierungsachse —, nur über `storage.py`s neuer
+  `reactor_presence`-Tabelle statt über Autor:innen, mit derselben
+  Person-Fenster-Falloff-Anti-Farming-Kurve wie beim Gießen. Eine
+  Selbstreaktion (Autor:in reagiert auf die eigene Nachricht) zählt über
+  `bot.py`s `on_raw_reaction_add` nichts, nicht einmal abgeschwächt; eine
+  kleine Gruppe, die sich gegenseitig Reaktionen zuschiebt, zählt nie mehr als
+  ihre eigene, kleine Kopfzahl an unterscheidbaren Stimmen — dieselbe
+  Anti-Clique-Eigenschaft, die `author_breadth` gegen Nachrichtenflut schon
+  hat. Eine gesunde, aber sozial stille Pflanze wird dadurch nie um eine
+  verdiente Blüte gebracht, blüht nur bescheiden (`BLOOM_INTENSITY_FLOOR`).
+  `voice.py` bekommt dafür zwei getrennte Pools (`_BLOOM_VIVID`,
+  `_BLOOM_MODEST`) statt eines geteilten mit eingesetzten Werten. Reagieren
+  während einer bereits offenen Blüte ändert deren Intensität nicht mehr — es
+  gibt absichtlich keinen laufenden, taktweise beobachtbaren Wert.
 
 **Offen:**
 
@@ -287,8 +312,8 @@ angelegt.
   keine Zeit- oder Jahreszeit-Tönung.
 - **Weitere, noch unbenannte Phasen:** zusätzliche Vitalitätssignale (siehe
   „Zulassungstest für ein neues Vitalitätssignal" oben) und die botanischen
-  Dimensionen, die sie antreiben — z. B. Reaktionen, Sprachaktivität,
-  Threads, Kanalbreite.
+  Dimensionen, die sie antreiben — z. B. Sprachaktivität, Threads,
+  Kanalbreite.
 
 **Es gibt keinen definierten letzten Schritt.** Der Phasenplan bleibt bewusst
 offen; weitere Stufen dürfen entstehen, solange sie der Emergenz-These treu
@@ -305,16 +330,17 @@ epiphyte/
 ├── structure.py         # REINE LOGIK: akkumulierte Struktur, Genom (aus Seed), grow(),
 │                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte,
 │                        #   Autorenbreite (author_breadth), zeitlicher Rhythmus
-│                        #   (temporal_rhythm)                      [Phase 5–9, 11, 12]
+│                        #   (temporal_rhythm), Blütenintensität (_bloom_intensity)
+│                        #                                    [Phase 5–9, 11, 12, 15]
 ├── voice.py             # REINE LOGIK: die Stimme der Pflanze — VoiceState, Text-Pools,
-│                        #   deterministische Auswahl (siehe Persona-Bibel)     [Phase 13]
+│                        #   deterministische Auswahl (siehe Persona-Bibel)  [Phase 13, 15]
 ├── presentation.py      # REINE LOGIK: der Rahmen um die Pflanze — LifeEvent, Akzentfarbe,
 │                        #   Feldstruktur, Bildplatzierung, Footer (siehe „Präsentation");
-│                        #   liefert ein Panel, kein Embed                      [Phase 14]
-├── render.py            # Struktur → PNG via Pillow (gekapselte I/O)                    [Phase 2, erweitert 5–9]
+│                        #   liefert ein Panel, kein Embed                  [Phase 14, 15]
+├── render.py            # Struktur → PNG via Pillow (gekapselte I/O)          [Phase 2, erweitert 5–9, 15]
 ├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
-│                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity
-│                        #   (I/O)                                  [Phase 3, erweitert 5–9, 11, 12]
+│                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity,
+│                        #   reactor_presence                       [Phase 3, erweitert 5–9, 11, 12, 15]
 ├── tests/               # pytest, ausschließlich für die reine Logik                    [ab Phase 1]
 ├── requirements.txt
 ├── requirements-dev.txt # pytest, reine Dev-Abhängigkeit, getrennt von der Laufzeit      [Phase 1]
@@ -349,7 +375,7 @@ Damit die Lücke zwischen These und Implementierung nicht in Prosa untergeht:
 | Abnehmende Grenzerträge pro Person/Fenster → Anti-Farming | **live** (`moisture.effective_water_amount`) |
 | Autorenbreite (Anzahl verschiedener Stimmen) → Verzweigungsgrad der Krone | **live** (`structure.author_breadth`, `grow()`, Phase 11) |
 | Zeitlicher Rhythmus (Gleichmäßigkeit der Tagesaktivität) → Wuchsform/Symmetrie | **live** (`structure.temporal_rhythm`, `grow()`, Phase 12) |
-| Reaktionen → eigene Dimension | entworfen, noch nicht gebaut |
+| Reaktionen (Breite der reagierenden Stimmen) → Blütenintensität | **live** (`structure._bloom_intensity`, `grow()`, Phase 15) |
 | Sprachaktivität (Voice) → eigene Dimension | entworfen, noch nicht gebaut |
 | Threads → eigene Dimension | entworfen, noch nicht gebaut |
 | Kanalbreite (wie viele verschiedene Kanäle aktiv sind) → eigene Dimension | entworfen, noch nicht gebaut |

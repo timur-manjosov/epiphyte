@@ -23,6 +23,17 @@ brings the living message back into view if it has scrolled away.
 Growth is gated by moisture, and moisture is subject to the per-person
 diminishing returns from Phase 3, so spam cannot farm a big tree.
 
+Phase 15 adds one more signal, reactions, but wires it in a deliberately
+different shape from breadth and rhythm: ``on_raw_reaction_add`` tops up a
+reactor's presence weight (the same anti-farmed, per-person diminishing-returns
+shape watering itself uses — see ``_water_reactor_presence``), a self-reaction
+counts for nothing, and the guild's current reaction warmth
+(``_guild_reaction_warmth``, read the same way author breadth is) is handed to
+``structure.grow`` every tick — but that value only ever gets *used* on the one
+step a bloom already earned by Phase 9's gate begins, becoming that bloom's
+fixed vividness for its whole duration. It is never a second gate on bloom
+itself, and it never touches growth, branching or moisture.
+
 Everything the plant says about itself, it says in the first person: the living
 message's heading and text are spoken by ``voice``, which reads them from the
 body and the moisture. Where those words land — the accent colour, which
@@ -293,6 +304,14 @@ class EpiphyteClient(discord.Client):
         #: ``structure.temporal_rhythm`` via ``_guild_rhythm``; see
         #: ``_record_daily_activity``.
         self._daily_activity: dict[int, dict[int, int]] = {}
+        #: Per guild, per reactor: (presence weight, last_seen). Mirrors
+        #: ``self._author_presence`` exactly, but for genuine (non-self)
+        #: reactions rather than messages; see ``_water_reactor_presence``.
+        self._reactor_presence: dict[int, dict[int, tuple[float, float]]] = {}
+        #: Per-reactor diminishing-returns window, kept apart from
+        #: ``self._windows`` (message watering) since reacting and posting are
+        #: separate actions with their own anti-farming curves.
+        self._reaction_windows: dict[tuple[int, int], WateringWindow] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
@@ -310,6 +329,7 @@ class EpiphyteClient(discord.Client):
         self._states = self._storage.load_all()
         self._author_presence = self._storage.load_all_author_presence()
         self._daily_activity = self._storage.load_all_daily_activity()
+        self._reactor_presence = self._storage.load_all_reactor_presence()
 
         guild_id = os.getenv(GUILD_ENV)
         if guild_id:
@@ -502,6 +522,66 @@ class EpiphyteClient(discord.Client):
             async with self._db_lock:
                 await asyncio.to_thread(self._storage.increment_daily_activity, guild_id, bucket)
 
+    async def _water_reactor_presence(self, guild_id: int, reactor_id: int, now: float) -> None:
+        """Add a genuine reaction's anti-farmed watering amount to the reactor's presence weight.
+
+        Mirrors :meth:`_water_author_presence` exactly, but keyed by its own
+        window (``self._reaction_windows``) and its own table
+        (``reactor_presence``): reacting and posting are separate actions, each
+        with its own per-person diminishing-returns curve computed from
+        :func:`moisture.next_watering`, so a single account cannot buy a wide
+        reaction-warmth reading either by flooding one day or by trading
+        reactions with the same handful of people — only distinct reactors,
+        each sustaining real presence over real days, cross
+        :data:`structure.AUTHOR_PRESENCE_FLOOR` and start to count (see
+        :meth:`_guild_reaction_warmth`). Only ever called for a genuine
+        reaction — the caller (:meth:`on_raw_reaction_add`) has already
+        excluded a message author reacting to their own message, which counts
+        for nothing here or anywhere else.
+        """
+        window = self._reaction_windows.get((guild_id, reactor_id))
+        start = window.window_start if window is not None else None
+        count = window.count if window is not None else 0
+        amount, new_start, new_count = moisture.next_watering(start, count, now)
+        self._reaction_windows[(guild_id, reactor_id)] = WateringWindow(new_start, new_count)
+
+        guild_reactors = self._reactor_presence.setdefault(guild_id, {})
+        weight, last_seen = guild_reactors.get(reactor_id, (0.0, now))
+        decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+        updated = moisture.water(decayed, amount)
+        guild_reactors[reactor_id] = (updated, now)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(
+                    self._storage.upsert_reactor_presence, guild_id, reactor_id, updated, now
+                )
+
+    async def _guild_reaction_warmth(self, guild_id: int, now: float) -> float:
+        """Decay this guild's recorded reactors to ``now``, drop the negligible
+        ones, and return its current reaction-warmth score.
+
+        Deliberately reuses :func:`structure.author_breadth` rather than a
+        parallel calculation: "how many distinct people cleared the presence
+        floor, saturating at a modest count" is exactly the same anti-clique,
+        anti-farming property reaction warmth needs, and there is no reason to
+        calibrate it a second time. Mirrors :meth:`_guild_author_breadth`'s
+        pruning, over ``self._reactor_presence`` instead.
+        """
+        guild_reactors = self._reactor_presence.get(guild_id, {})
+        stale: list[int] = []
+        weights: list[float] = []
+        for reactor_id, (weight, last_seen) in list(guild_reactors.items()):
+            decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            if decayed < AUTHOR_PRESENCE_PRUNE_FLOOR:
+                stale.append(reactor_id)
+                del guild_reactors[reactor_id]
+            else:
+                weights.append(decayed)
+        if stale and self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.delete_reactor_presence, guild_id, stale)
+        return structure.author_breadth(weights)
+
     async def _guild_author_breadth(self, guild_id: int, now: float) -> float:
         """Decay this guild's recorded voices to ``now``, drop the negligible ones,
         and return its current author-breadth score (see :func:`structure.author_breadth`).
@@ -559,6 +639,17 @@ class EpiphyteClient(discord.Client):
             async with self._db_lock:
                 await asyncio.to_thread(self._storage.clear_author_presence, guild_id)
 
+    async def _clear_reactor_presence(self, guild_id: int) -> None:
+        """Wipe a guild's recorded reactors when its successor germinates.
+
+        Mirrors :meth:`_clear_author_presence`: reaction warmth is this life's
+        own accumulated crowd, not the lineage's.
+        """
+        self._reactor_presence.pop(guild_id, None)
+        if self._storage is not None:
+            async with self._db_lock:
+                await asyncio.to_thread(self._storage.clear_reactor_presence, guild_id)
+
     def _prune_watering_windows(self, now: float) -> None:
         """Drop watering windows whose window has fully elapsed.
 
@@ -595,9 +686,13 @@ class EpiphyteClient(discord.Client):
         and temporal rhythm — see :meth:`_guild_author_breadth` and
         :meth:`_guild_rhythm`), or — if it is dead — counts down a brief dead
         phase and germinates a mutated successor when it elapses, wiping the
-        recorded voices along with it. The recorded daily activity behind rhythm
-        is deliberately *not* wiped on rebirth — see ``storage.py``'s module
-        docstring. All the growth, death and heredity is the pure logic in
+        recorded voices (and reactors) along with it. The recorded daily activity
+        behind rhythm is deliberately *not* wiped on rebirth — see ``storage.py``'s
+        module docstring. The guild's current reaction warmth
+        (:meth:`_guild_reaction_warmth`) is also passed into every growth step,
+        but — unlike breadth and rhythm — it shapes nothing about growth itself;
+        :func:`structure.grow` only ever samples it on the one step a bloom
+        begins. All the growth, death and heredity is the pure logic in
         :mod:`structure`; this only reads the clock, runs the small state machine
         and stores the result.
         """
@@ -613,6 +708,7 @@ class EpiphyteClient(discord.Client):
                             last_update=now, dead_ticks=0)
                 )
                 await self._clear_author_presence(guild_id)
+                await self._clear_reactor_presence(guild_id)
                 await self._reclaim_after_reseed()
             else:
                 await self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
@@ -621,7 +717,8 @@ class EpiphyteClient(discord.Client):
         genome = structure.genome_from_seed(state.structure.seed)
         breadth = await self._guild_author_breadth(guild_id, now)
         rhythm = await self._guild_rhythm(guild_id, now)
-        grown = structure.grow(state.structure, genome, current, 1, breadth, rhythm)
+        reaction_warmth = await self._guild_reaction_warmth(guild_id, now)
+        grown = structure.grow(state.structure, genome, current, 1, breadth, rhythm, reaction_warmth)
         await self._store(replace(state, structure=grown, moisture=current, last_update=now, dead_ticks=0))
 
     async def on_message(self, message: discord.Message) -> None:
@@ -641,6 +738,31 @@ class EpiphyteClient(discord.Client):
         if state is None or state.channel_id is None:
             return
         await self.water_plant(message.guild.id, message.author.id, time.time())
+
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Credit a genuine reaction toward the guild's reaction-warmth reading.
+
+        Uses the raw event (rather than ``on_reaction_add``) so this fires even
+        for messages outside the client's cache, exactly like ``on_message``
+        needs no cache either. Reactions are a standard, non-privileged gateway
+        event — ``discord.Intents.default()`` already covers them, so this adds
+        no new intent. Ignores DMs, the bot's own reactions, guilds with no
+        plant yet, and — the anti-farming rule at the heart of this signal — a
+        message author reacting to their own message: ``message_author_id`` is
+        included on the raw payload for every ``REACTION_ADD``, so a
+        self-reaction is detected and excluded here before it ever reaches
+        :meth:`_water_reactor_presence`, rather than merely discounted.
+        """
+        if payload.guild_id is None:
+            return
+        if payload.user_id == (self.user.id if self.user else None):
+            return
+        if payload.message_author_id is None or payload.user_id == payload.message_author_id:
+            return
+        state = self.state(payload.guild_id)
+        if state is None or state.channel_id is None:
+            return
+        await self._water_reactor_presence(payload.guild_id, payload.user_id, time.time())
 
     # --- the metabolic tick --------------------------------------------------
 

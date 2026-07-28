@@ -39,6 +39,7 @@ def _state(**overrides) -> VoiceState:
         "blooming": False,
         "seeded": False,
         "hosting": False,
+        "vivid_bloom": False,
     }
     fields.update(overrides)
     return VoiceState(**fields)
@@ -69,7 +70,7 @@ def test_selection_survives_a_new_process():
         "import voice;"
         "from voice import Chapter, Mood, VoiceState;"
         "state = VoiceState(seed=4242, mood=Mood.WITHERED, chapter=Chapter.OLD,"
-        " generation=1, blooming=False, seeded=False, hosting=False);"
+        " generation=1, blooming=False, seeded=False, hosting=False, vivid_bloom=False);"
         "print(voice.passage(state))"
     )
     result = subprocess.run(
@@ -190,13 +191,27 @@ def test_every_milestone_has_words():
         assert len(voice.milestone_lines(_state(**{field: True}))) == 1
 
 
+def test_vivid_bloom_speaks_from_its_own_pool():
+    """A vivid bloom's words come from a different, distinct pool than a modest one.
+
+    Both are still bloom lines — the mechanism behind the difference (reaction
+    warmth) is never named — but a reader should be able to tell the two apart.
+    """
+    modest = voice.milestone_lines(_state(blooming=True, vivid_bloom=False))[0]
+    vivid = voice.milestone_lines(_state(blooming=True, vivid_bloom=True))[0]
+    assert modest in voice._BLOOM_MODEST
+    assert vivid in voice._BLOOM_VIVID
+    assert modest not in voice._BLOOM_VIVID
+    assert vivid not in voice._BLOOM_MODEST
+
+
 def test_the_pools_are_wide_enough_to_watch_daily():
     """Every pool holds enough distinct lines that a month of watching stays fresh."""
     pools = (
         list(voice._TITLES.values())
         + list(voice._MOODS.values())
         + list(voice._CHAPTERS.values())
-        + [voice._BLOOM, voice._SEEDED, voice._HOSTING, voice._GERMINATION]
+        + [voice._BLOOM_VIVID, voice._BLOOM_MODEST, voice._SEEDED, voice._HOSTING, voice._GERMINATION]
     )
     for pool in pools:
         assert len(pool) >= 8
@@ -216,7 +231,7 @@ def test_the_plant_never_breaks_character():
             list(voice._TITLES.values())
             + list(voice._MOODS.values())
             + list(voice._CHAPTERS.values())
-            + [voice._BLOOM, voice._SEEDED, voice._HOSTING, voice._GERMINATION]
+            + [voice._BLOOM_VIVID, voice._BLOOM_MODEST, voice._SEEDED, voice._HOSTING, voice._GERMINATION]
         )
         for line in pool
     ]

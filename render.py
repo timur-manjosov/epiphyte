@@ -18,6 +18,13 @@ keep pale seed heads, which survive the drought that takes the blossoms; and a
 tree old enough to have taken on an epiphyte carries that second little plant,
 drawn as the independent structure it is, on the limb it settled on.
 
+A bloom's own ``structure.stats.bloom_intensity`` (see ``structure.py``, Phase
+15) additionally scales how abundant and how saturated its blossoms are: at
+full intensity every living tip flowers at full colour, same as before Phase
+15; at the floor only a sparse handful do, pale and washed toward white. This
+module never computes that value — it only reads the number the already-grown
+structure already carries, same as it reads ``is_blooming`` or ``has_seeded``.
+
 Stem thickness follows the pipe model: a node's width is derived from how many
 tips (terminal endpoints) its subtree carries, so the trunk that feeds the whole
 crown is thick and the fine twigs are thin. Colour runs along height, from rooted
@@ -220,20 +227,37 @@ def _bloom_color(genome: Genome) -> Color:
     return _lerp_color(BLOOM_RAMP[stop], BLOOM_RAMP[stop + 1], position - stop)
 
 
+#: Floor on a blossom's radius scale at the lowest bloom intensity, so a modest
+#: bloom's flowers are smaller but never vanishingly tiny.
+_INTENSITY_RADIUS_FLOOR: float = 0.6
+
+
 def _draw_blossom(
     draw: ImageDraw.ImageDraw,
     tip_px: tuple[float, float],
     genome: Genome,
     node_id: int,
     color: Color,
+    intensity: float = 1.0,
 ) -> None:
     """Draw one blossom at a living tip: a rosette of petals around a bright eye.
 
     The rosette's rotation is seeded by ``node_id`` so a flower keeps its face
-    between renders instead of spinning every tick.
+    between renders instead of spinning every tick. ``intensity`` (see
+    ``structure.LifeStats.bloom_intensity``) is spent on the same ``node_id``-seeded
+    draw used for the rotation, before it: at ``1.0`` every tip flowers, same as
+    before Phase 15 introduced this parameter; below that, only a fraction of tips
+    do, chosen once per tip and stable between renders like everything else seeded
+    by ``node_id``, and every blossom that does appear draws a little smaller —
+    abundance and size, not hue, is how a modest bloom reads as modest.
     """
-    radius = _BLOSSOM_RADIUS * genome.leaf_size
-    phase = random.Random(f"bloom:{node_id}").uniform(0.0, 2.0 * math.pi)
+    rng = random.Random(f"bloom:{node_id}")
+    if rng.random() >= intensity:
+        return  # this tip's draw did not clear the bloom's abundance this life
+    radius = _BLOSSOM_RADIUS * genome.leaf_size * (
+        _INTENSITY_RADIUS_FLOOR + (1.0 - _INTENSITY_RADIUS_FLOOR) * intensity
+    )
+    phase = rng.uniform(0.0, 2.0 * math.pi)
     cx, cy = tip_px
     for petal in range(_PETALS):
         angle = phase + petal * 2.0 * math.pi / _PETALS
@@ -369,7 +393,13 @@ def _draw_crown(
     seeded: bool = False,
     leaf_color: Color = LEAF,
 ) -> None:
-    """Draw what the living tips carry: leaves, then any seed heads and blossoms."""
+    """Draw what the living tips carry: leaves, then any seed heads and blossoms.
+
+    A bloom's abundance and blossom size come from ``structure.stats.bloom_intensity``
+    — read straight off the already-grown structure, since this module never
+    computes vitality dimensions itself, only draws them (see the module docstring).
+    """
+    intensity = structure.stats.bloom_intensity
     for node in structure.nodes:
         if node.state is not NodeState.TIP:
             continue
@@ -378,7 +408,7 @@ def _draw_crown(
         if seeded:
             _draw_seed_head(draw, tip_px, genome, node.id)
         if bloom_color is not None:
-            _draw_blossom(draw, tip_px, genome, node.id, bloom_color)
+            _draw_blossom(draw, tip_px, genome, node.id, bloom_color, intensity)
 
 
 def _draw_structure(

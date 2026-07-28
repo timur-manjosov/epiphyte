@@ -49,6 +49,18 @@ organic angle noise applied to every internode, growing a calmer, more symmetric
 body; a channel whose activity comes in occasional bursts scales that noise up,
 growing a more irregular, gnarled one — at the same size and the same crown
 breadth, since it touches a different knob than :func:`author_breadth` does.
+
+Reactions are a third signal, but a differently-shaped one: instead of steering
+growth every step like breadth and rhythm do, ``reaction_warmth`` (read the same
+way :func:`author_breadth` reads presence weights, just over reactors rather than
+message authors — see ``bot.py``) is sampled only at the instant a bloom already
+earned by Phase 9's own maturity/health gate begins, and becomes that bloom's
+:attr:`LifeStats.bloom_intensity` for its whole duration (:func:`_bloom_intensity`).
+There is deliberately no running "reaction score" to watch tick by tick — only,
+occasionally, a bloom whose vividness reflects how broadly (not how loudly) the
+channel has been reacting over the same long window the health/maturity gate
+already reads. It never affects *whether* a bloom happens, never touches growth,
+branching or moisture, and a quiet-but-healthy channel still blooms, just modestly.
 """
 
 from __future__ import annotations
@@ -222,6 +234,17 @@ BLOOM_MIN_NODES: int = 1200
 #: brief one. Seed, once set, stays on the body.
 SEED_BLOOM_STEPS: int = 168
 
+#: Vividness a bloom opens with when reaction_warmth is zero — a healthy but
+#: socially quiet channel is never denied the bloom it earned, only shown a
+#: modest one. Set well above zero so "no reactions at all" still reads as a
+#: bloom, not as a blank one (see :func:`_bloom_intensity`).
+BLOOM_INTENSITY_FLOOR: float = 0.2
+#: Bloom intensity at or above which the plant speaks of an unusually vivid
+#: bloom rather than an ordinary, earned one (see ``voice.py``). Set past the
+#: floor's midpoint to the saturated range, so "vivid" genuinely means broad,
+#: sustained warmth rather than merely non-zero reactions.
+VIVID_BLOOM_THRESHOLD: float = 0.6
+
 #: Age, body and number of flowerings a tree needs before an epiphyte takes hold.
 #: Three months of life, a large body and several seasons of bloom behind it.
 EPIPHYTE_MIN_AGE: int = 2160
@@ -287,12 +310,16 @@ class LifeStats:
     ever rise — how long the plant has flowered in total, and how many separate
     times it has come into bloom. ``in_bloom`` is its bloom state as of the last
     step, which is what lets a new flowering be told from a continuing one.
+    ``bloom_intensity`` is sampled once, when a bloom begins, from the reaction
+    warmth accumulated at that moment (:func:`_bloom_intensity`), and then held
+    fixed for that bloom's whole duration — never a live, watchable value.
     """
 
     healthy_steps: int = 0
     bloom_steps: int = 0
     bloom_count: int = 0
     in_bloom: bool = False
+    bloom_intensity: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -867,23 +894,44 @@ def _dieback_step(nodes: list[Node], seed: int, vitality: float, step_index: int
             nodes[node.id] = replace(node, state=NodeState.DEAD)
 
 
-def _milestone_step(stats: LifeStats, size: int, vitality: float) -> LifeStats:
+def _bloom_intensity(reaction_warmth: float) -> float:
+    """Map accumulated reaction warmth (``[0, 1]``, see :func:`author_breadth`)
+    to the vividness a bloom opens with.
+
+    Linear between :data:`BLOOM_INTENSITY_FLOOR` (no reaction warmth at all) and
+    ``1.0`` (saturated, broad-based warmth), so a quiet-but-healthy channel still
+    gets a real bloom — just a modest one — and no reaction activity is ever
+    worth zero.
+    """
+    return BLOOM_INTENSITY_FLOOR + _clamp01(reaction_warmth) * (1.0 - BLOOM_INTENSITY_FLOOR)
+
+
+def _milestone_step(stats: LifeStats, size: int, vitality: float, reaction_warmth: float) -> LifeStats:
     """Advance the life statistics by one step: bank health, flower, spend reserve.
 
     A healthy step banks one unit of reserve. If that leaves the plant in bloom it
     flowers — counting a new flowering when this is the first step of one — and
     pays :data:`BLOOM_COST` out of the bank, which is more than health puts in. So
     a bloom always drains itself and ends, and the plant has to earn the next one.
+
+    ``reaction_warmth`` is read only on the step a bloom *begins*: that single
+    sample becomes :attr:`LifeStats.bloom_intensity` and is then carried unchanged
+    through every later step of the same bloom (see :func:`_bloom_intensity`) —
+    reacting more once a bloom is already open cannot brighten it retroactively,
+    and there is no per-step value to watch and time against.
     """
     healthy_steps = stats.healthy_steps + (1 if vitality >= BLOOM_VITALITY else 0)
     blooming = _bloom_state(size, healthy_steps, stats.in_bloom, vitality)
     if not blooming:
         return replace(stats, healthy_steps=healthy_steps, in_bloom=False)
+    new_bloom = not stats.in_bloom
+    intensity = _bloom_intensity(reaction_warmth) if new_bloom else stats.bloom_intensity
     return LifeStats(
         healthy_steps=max(0, healthy_steps - BLOOM_COST),
         bloom_steps=stats.bloom_steps + 1,
-        bloom_count=stats.bloom_count + (0 if stats.in_bloom else 1),
+        bloom_count=stats.bloom_count + (1 if new_bloom else 0),
         in_bloom=True,
+        bloom_intensity=intensity,
     )
 
 
@@ -969,6 +1017,7 @@ def grow(
     steps: int,
     breadth: float = 0.5,
     rhythm: float = 0.5,
+    reaction_warmth: float = 0.0,
 ) -> Structure:
     """Return the structure advanced ``steps`` life-steps under ``moisture`` (pure).
 
@@ -1001,7 +1050,13 @@ def grow(
     Either way each step also advances the plant's life statistics, which is where
     the milestones come from: health is banked and spent by flowering, and a tree
     that has grown old and large and flowered often enough takes on an epiphyte,
-    which from then on grows alongside it under the same weather.
+    which from then on grows alongside it under the same weather. ``reaction_warmth``
+    (how broadly, not how loudly, the channel has reacted recently — the same
+    breadth reading as ``breadth`` above, just over reactors instead of message
+    authors) plays no part in growth, branching or dieback at all: it is read once,
+    only on the step a bloom begins, and becomes that bloom's fixed vividness (see
+    :func:`_bloom_intensity`). It defaults to ``0.0``, the floor: a caller that does
+    not pass it gets the most modest bloom rather than a denied one.
 
     So the number of dead nodes only ever rises, and lignified wood (living plus
     dead) never falls: the body accumulates monotonically and remembers its whole
@@ -1037,7 +1092,7 @@ def grow(
                 branch_multiplier,
                 jitter_multiplier,
             )
-        stats = _milestone_step(stats, len(nodes), vitality)
+        stats = _milestone_step(stats, len(nodes), vitality, reaction_warmth)
         step_index += 1
 
         if epiphyte is not None:
@@ -1075,6 +1130,7 @@ def serialize(structure: Structure) -> dict:
             "bloom_steps": structure.stats.bloom_steps,
             "bloom_count": structure.stats.bloom_count,
             "in_bloom": structure.stats.in_bloom,
+            "bloom_intensity": structure.stats.bloom_intensity,
         },
         "epiphyte": (
             None
@@ -1139,6 +1195,12 @@ def deserialize(data: dict) -> Structure:
             bloom_steps=stats.get("bloom_steps", 0),
             bloom_count=stats.get("bloom_count", 0),
             in_bloom=stats.get("in_bloom", False),
+            # A plant saved before this field existed but already mid-bloom gets
+            # the floor rather than 0.0 — an already-open bloom stored with no
+            # intensity on record should not render as though it earned nothing.
+            bloom_intensity=stats.get(
+                "bloom_intensity", BLOOM_INTENSITY_FLOOR if stats.get("in_bloom", False) else 0.0
+            ),
         ),
         epiphyte=(
             None

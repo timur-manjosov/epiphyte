@@ -165,6 +165,11 @@ BLOOM_RAMP: tuple[int, ...] = (0x88C0D0, 0xB48EAD, 0xBF616A, 0xD08770, 0xEBCB8B)
 #: endpoint would not (see ``tests/test_presentation.py``).
 SNOW = 0xECEFF4
 BLOOM_LIFT: float = 0.15
+#: How far a bloom's accent is lifted toward :data:`SNOW` at the lowest bloom
+#: intensity (see ``structure.LifeStats.bloom_intensity``) — reusing the same
+#: blend :data:`BLOOM_LIFT` already performs, just carried further, rather than
+#: a second colour system: a modest bloom's accent is the same hue, only paler.
+BLOOM_LIFT_MODEST: float = 0.4
 
 #: Accent per life event, for every event whose colour is fixed. :data:`LifeEvent.BLOOM`
 #: is absent on purpose: a flowering plant's accent is its own (see :func:`accent`).
@@ -214,18 +219,24 @@ def _blend(low: int, high: int, t: float) -> int:
     return blended
 
 
-def _bloom_accent(seed: int) -> int:
+def _bloom_accent(seed: int, intensity: float) -> int:
     """The colour this individual flowers in, as a point along :data:`BLOOM_RAMP`.
 
     Read from the same ``bloom_hue`` gene the renderer paints the blossoms with, so
     the frame of a flowering plant is the colour of its own flowers rather than a
     generic festive one — the one accent in this module that differs per plant,
-    lifted toward snow by :data:`BLOOM_LIFT` for the reason documented there.
+    lifted toward snow by an amount that runs from :data:`BLOOM_LIFT` (full
+    intensity — this bloom's own saturated hue, unchanged from before Phase 15)
+    to :data:`BLOOM_LIFT_MODEST` (the intensity floor — the same hue, washed
+    pale) as ``intensity`` falls. Reuses the existing ramp and blend rather than
+    a second colour axis for vividness.
     """
     hue = max(0.0, min(1.0, structure.genome_from_seed(seed).bloom_hue))
     position = hue * (len(BLOOM_RAMP) - 1)
     stop = min(int(position), len(BLOOM_RAMP) - 2)
-    return _blend(_blend(BLOOM_RAMP[stop], BLOOM_RAMP[stop + 1], position - stop), SNOW, BLOOM_LIFT)
+    color = _blend(BLOOM_RAMP[stop], BLOOM_RAMP[stop + 1], position - stop)
+    lift = BLOOM_LIFT_MODEST - max(0.0, min(1.0, intensity)) * (BLOOM_LIFT_MODEST - BLOOM_LIFT)
+    return _blend(color, SNOW, lift)
 
 
 def life_event(state: voice.VoiceState) -> LifeEvent:
@@ -266,15 +277,18 @@ def life_event(state: voice.VoiceState) -> LifeEvent:
     return LifeEvent.STEADY
 
 
-def accent(event: LifeEvent, seed: int) -> int:
+def accent(event: LifeEvent, seed: int, intensity: float = 1.0) -> int:
     """The frame's colour for this event, as a packed ``0xRRGGBB`` integer.
 
     Deterministic in its inputs and total over :class:`LifeEvent` — there is no
     fallback colour, because a fallback is exactly the generic default this whole
-    module exists to remove.
+    module exists to remove. ``intensity`` (see ``structure.LifeStats.bloom_intensity``)
+    only ever matters for :data:`LifeEvent.BLOOM`; it defaults to ``1.0`` — full
+    saturation, this function's exact pre-Phase-15 behaviour — so every other
+    event, and any caller that does not pass it, is unaffected.
     """
     if event is LifeEvent.BLOOM:
-        return _bloom_accent(seed)
+        return _bloom_accent(seed, intensity)
     return _EVENT_ACCENTS[event]
 
 
@@ -542,7 +556,7 @@ def compose(
 
     return Panel(
         event=event,
-        accent=accent(event, plant.seed),
+        accent=accent(event, plant.seed, plant.stats.bloom_intensity),
         title=voice.title(state),
         body="\n\n".join(body),
         fields=fields,

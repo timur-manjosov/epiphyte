@@ -27,6 +27,14 @@ successor germinates: rhythm reads a community's own day-to-day cadence, not an
 individual plant's biography, so it is never reset by a death it has nothing to
 do with. It is only ever pruned back to the rolling window
 :func:`structure.temporal_rhythm` reads (see ``prune_daily_activity``).
+
+A fourth table, ``reactor_presence``, mirrors ``author_presence`` exactly —
+weight and last-touched time per ``(guild_id, reactor_id)`` — but for people who
+have reacted rather than posted. It feeds the reaction-warmth reading that only
+ever surfaces once, sampled at the moment a bloom already earned by Phase 9's
+own gate begins (see :func:`structure._bloom_intensity`), and is wiped on the
+same rebirth as ``author_presence``: like breadth, a new generation's social
+warmth is this life's own to earn, not its predecessor's.
 """
 
 from __future__ import annotations
@@ -139,6 +147,17 @@ class Storage:
                 day_bucket INTEGER NOT NULL,
                 count      INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, day_bucket)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reactor_presence (
+                guild_id   INTEGER NOT NULL,
+                reactor_id INTEGER NOT NULL,
+                weight     REAL    NOT NULL,
+                last_seen  REAL    NOT NULL,
+                PRIMARY KEY (guild_id, reactor_id)
             )
             """
         )
@@ -290,6 +309,70 @@ class Storage:
         crowd, not the lineage's.
         """
         self._connection.execute("DELETE FROM author_presence WHERE guild_id = ?", (guild_id,))
+        self._connection.commit()
+
+    def load_all_reactor_presence(self) -> dict[int, dict[int, tuple[float, float]]]:
+        """Load every guild's recorded reactor-presence weights, keyed by guild then reactor.
+
+        Mirrors :meth:`load_all_author_presence` exactly, over reactors instead of
+        message authors — see the module docstring.
+        """
+        rows = self._connection.execute(
+            "SELECT guild_id, reactor_id, weight, last_seen FROM reactor_presence"
+        ).fetchall()
+        result: dict[int, dict[int, tuple[float, float]]] = {}
+        for row in rows:
+            result.setdefault(row["guild_id"], {})[row["reactor_id"]] = (
+                row["weight"],
+                row["last_seen"],
+            )
+        return result
+
+    def upsert_reactor_presence(
+        self, guild_id: int, reactor_id: int, weight: float, last_seen: float
+    ) -> None:
+        """Insert or update one reactor's presence weight and commit immediately.
+
+        Called on every genuine (non-self) reaction, mirroring
+        :meth:`upsert_author_presence`.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO reactor_presence (guild_id, reactor_id, weight, last_seen)
+            VALUES (:guild_id, :reactor_id, :weight, :last_seen)
+            ON CONFLICT(guild_id, reactor_id) DO UPDATE SET
+                weight    = excluded.weight,
+                last_seen = excluded.last_seen
+            """,
+            {
+                "guild_id": guild_id,
+                "reactor_id": reactor_id,
+                "weight": weight,
+                "last_seen": last_seen,
+            },
+        )
+        self._connection.commit()
+
+    def delete_reactor_presence(self, guild_id: int, reactor_ids: list[int]) -> None:
+        """Delete specific reactors' presence rows — their weight has decayed to nothing.
+
+        Mirrors :meth:`delete_author_presence`, run once per metabolic tick.
+        """
+        if not reactor_ids:
+            return
+        self._connection.executemany(
+            "DELETE FROM reactor_presence WHERE guild_id = ? AND reactor_id = ?",
+            [(guild_id, reactor_id) for reactor_id in reactor_ids],
+        )
+        self._connection.commit()
+
+    def clear_reactor_presence(self, guild_id: int) -> None:
+        """Delete every reactor-presence row for a guild — a fresh generation starts unheard.
+
+        Called alongside :meth:`clear_author_presence` when a dead plant's
+        successor germinates — see the module docstring.
+        """
+        self._connection.execute("DELETE FROM reactor_presence WHERE guild_id = ?", (guild_id,))
         self._connection.commit()
 
     def load_all_daily_activity(self) -> dict[int, dict[int, int]]:

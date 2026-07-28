@@ -579,14 +579,18 @@ def test_growth_output_is_unchanged_by_the_active_tips_cache() -> None:
     one (grown large, aged and flowered enough to carry an epiphyte, i.e. it also
     exercises dieback-adjacent bookkeeping and :func:`_advance_epiphyte`). Iterating
     only the active tips must still produce byte-for-byte identical structures.
+
+    Recomputed once, for Phase 15's ``bloom_intensity`` field on
+    :func:`serialize`'s output — a legitimate schema addition, not a topology
+    change, so the hashes moved but the guarantee this test checks did not.
     """
     small = _grown(99, 0.85, 25)
-    assert _hash(small) == "c186fdaade4164b4fd25fd594d2392b92adcc59fb1593a7d3619239384cbee54"
+    assert _hash(small) == "75ce399dcdc8fc6fbc3393c7f0ac97f68ba75ce60a73fc573811cddd38b1cac2"
 
     genome = genome_from_seed(TENDED_SEED)
     large = grow(_epiphyte_ready(), genome, TENDED, 100)
     assert large.epiphyte is not None, "the large fixture should have settled an epiphyte"
-    assert _hash(large) == "9e30ac2520d2946b4e9de0f637601bd4f7dfbd8bfa625b7f78522d7bc7569e48"
+    assert _hash(large) == "08a8c2b9416b3f385b0420cf1d4bd2dadbbdeb2ea52e6d95df75ce3378ddf2fa"
 
 
 # --- Phase 11: author breadth (crown branching) ------------------------------

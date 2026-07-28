@@ -214,6 +214,33 @@ def test_every_life_event_has_its_own_accent():
         assert presentation.accent(LifeEvent.BLOOM, seed) not in fixed
 
 
+def test_bloom_accent_pales_toward_snow_as_intensity_falls():
+    """A modest bloom (low ``bloom_intensity``, see Phase 15) wears the same hue
+    as a vivid one, only washed paler — reusing the existing ramp and lift, not a
+    second colour axis for vividness."""
+    for seed in (0, 1 << 56, 42, 12345):
+        vivid = presentation.accent(LifeEvent.BLOOM, seed, intensity=1.0)
+        modest = presentation.accent(LifeEvent.BLOOM, seed, intensity=structure.BLOOM_INTENSITY_FLOOR)
+        assert vivid != modest
+
+        def distance_from_snow(color: int) -> int:
+            return sum(
+                abs(((color >> shift) & 0xFF) - ((presentation.SNOW >> shift) & 0xFF))
+                for shift in (16, 8, 0)
+            )
+
+        assert distance_from_snow(modest) < distance_from_snow(vivid), f"seed {seed}"
+
+
+def test_bloom_accent_stays_distinct_from_fixed_accents_at_every_intensity():
+    """The floor's paler colour must not accidentally land on another event's
+    fixed accent either — checked across every bloom gene, at both extremes."""
+    fixed = {presentation.accent(event, 0) for event in LifeEvent if event is not LifeEvent.BLOOM}
+    for seed in _BLOOM_GENE_SEEDS:
+        for intensity in (0.0, structure.BLOOM_INTENSITY_FLOOR, 1.0):
+            assert presentation.accent(LifeEvent.BLOOM, seed, intensity) not in fixed
+
+
 def test_beginnings_accompany_the_words_and_everything_else_leads_with_the_picture():
     """A seedling is a few pixels of thread; it does not get the full-width slot."""
     panels = {
