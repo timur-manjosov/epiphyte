@@ -71,6 +71,15 @@ window needs no stored anniversary: the current year's own tick count is how lon
 ago that year turned. Nothing here touches growth, moisture or any signal — it is
 the same data the plant already lived through, read backward.
 
+Phase 20 adds the smallest thing in the whole project, and adds no signal
+either: the wind. ``on_typing`` — the highest-frequency event here, and, like
+all of the above, a standard non-privileged one — writes a single timestamp per
+guild, and ``_wind`` turns it into a bool the renderer leans the crown by while
+it lasts. Nothing is stored, nothing accumulates, nothing is pruned, and no
+render happens that was not going to happen anyway: a gust only shows in the
+heartbeat, a ``/plant`` snapshot or a re-anchor that fell inside it. It is the
+plant's weather, not its life.
+
 Everything the plant says about itself, it says in the first person: the living
 message's heading and text are spoken by ``voice``, which reads them from the
 body and the moisture. Where those words land — the accent colour, which
@@ -89,6 +98,7 @@ isolates the Pillow drawing and ``storage`` the SQLite persistence.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import io
 import logging
 import os
@@ -453,6 +463,12 @@ class EpiphyteClient(discord.Client):
         #: whole credit, carried forward so several short calls add up the same
         #: as one long one (see ``structure.voice_credits``).
         self._voice_seconds: dict[tuple[int, int], float] = {}
+        #: Per guild: when somebody in it was last typing. One float per guild
+        #: with a plant, overwritten in place — the smallest piece of state in
+        #: this class and the only one that is never persisted, never decayed and
+        #: never read by anything but the renderer. A restart forgets it, which is
+        #: the correct lifetime for weather; see ``on_typing`` and ``_wind``.
+        self._typing: dict[int, float] = {}
         #: Per guild, per calendar year: that year's accumulated record. The only
         #: thing here that reaches back further than weeks, and the only reason
         #: the cross-section can exist at all; see ``_record_year``. Never feeds
@@ -1063,6 +1079,21 @@ class EpiphyteClient(discord.Client):
             return ()
         return structure.rings(records.values(), year)
 
+    # --- the weather (nothing is kept, nothing is measured) --------------------
+
+    def _wind(self, guild_id: int, now: float) -> bool:
+        """Whether the air around this guild's plant is currently moving.
+
+        The judgement itself is :func:`structure.wind_is_stirring`'s; this only
+        supplies the elapsed time from the one float :meth:`on_typing` keeps.
+        A pure read, like :meth:`_voice_activity` and :meth:`_cross_section`, and
+        this one has nothing it *could* write: there is no table, no decay and no
+        window behind it. A guild nobody has typed in since the last restart has
+        no entry at all, which reads as still air.
+        """
+        last = self._typing.get(guild_id)
+        return structure.wind_is_stirring(None if last is None else now - last)
+
     async def _clear_author_presence(self, guild_id: int) -> None:
         """Wipe a guild's recorded voices when its successor germinates.
 
@@ -1328,6 +1359,42 @@ class EpiphyteClient(discord.Client):
             return
         await self._water_reactor_presence(payload.guild_id, payload.user_id, time.time())
 
+    async def on_typing(
+        self,
+        channel: discord.abc.Messageable,
+        user: discord.User | discord.Member,
+        when: datetime.datetime,
+    ) -> None:
+        """Note that somebody is typing in this guild, so the air moves for a moment.
+
+        Typing is a standard, non-privileged gateway event — like every event
+        above it, ``discord.Intents.default()`` already covers it, so this phase
+        adds no intent either. It is also the highest-frequency event in the
+        whole bot, which is why the handler is a single dictionary write of one
+        float per guild: nothing accumulates, nothing is persisted, nothing is
+        pruned, and somebody typing all afternoon costs exactly the same memory
+        as somebody typing once. Deliberately: this is weather, and weather has
+        no ledger.
+
+        Guild-wide, like every other event here — ``CLAUDE.md``'s scope rule
+        holds for this too, plant-wide rather than channel-wide. The bound
+        channel is where the plant is shown, never a filter on what reaches it.
+
+        ``when`` is Discord's own timestamp for the event; a local clock read is
+        used instead, so this cannot disagree with the clock every render is
+        judged against by however far the two have drifted. The distinction is
+        seconds at most, but the whole effect is only ninety seconds long.
+        """
+        if user.bot:
+            return
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return
+        state = self.state(guild.id)
+        if state is None or state.channel_id is None:
+            return
+        self._typing[guild.id] = time.time()
+
     # --- the metabolic tick --------------------------------------------------
 
     async def metabolic_tick(self) -> None:
@@ -1390,26 +1457,32 @@ class EpiphyteClient(discord.Client):
         moisture_value: float,
         voice_activity: float = 0.0,
         rings: tuple[structure.Ring, ...] = (),
+        wind: bool = False,
     ) -> bytes:
         """Render the image the message currently calls for, off the event loop.
 
         Normally that is the plant: ``moisture_value`` is the vitality that
         modulates its look and ``voice_activity`` the guild's current voice
         reading, which modulates its root system the same way; the genome is
-        recomputed from the seed so the render matches this individual.
+        recomputed from the seed so the render matches this individual. ``wind``
+        is whether somebody is typing at this moment (see :meth:`_wind`) — the
+        one argument that is not a reading of the server's life but of its
+        weather, and the only one that will be different a minute from now.
 
         For the one day a year ``rings`` is non-empty (see
         :meth:`_cross_section`) it is the trunk's cross-section instead — a
         different picture from different inputs, not a variation on the plant.
         The two are alternatives rather than layers, which is why this chooses
-        between two render functions rather than passing rings into one.
+        between two render functions rather than passing rings into one. Wind
+        does not reach the cross-section, and could not mean anything there:
+        wind moves a standing plant, and a cross-section is not one.
         """
         if rings:
             buffer = await asyncio.to_thread(render.render_rings, rings, plant.seed)
         else:
             genome = structure.genome_from_seed(plant.seed)
             buffer = await asyncio.to_thread(
-                render.render, plant, moisture_value, genome, voice_activity
+                render.render, plant, moisture_value, genome, voice_activity, wind
             )
         return buffer.getvalue()
 
@@ -1496,7 +1569,11 @@ class EpiphyteClient(discord.Client):
             now = time.time()
             rings = self._cross_section(guild_id, now)
             png = await self._render_bytes(
-                state.structure, state.moisture, self._voice_activity(guild_id, now), rings
+                state.structure,
+                state.moisture,
+                self._voice_activity(guild_id, now),
+                rings,
+                self._wind(guild_id, now),
             )
             embed = self._embed_for(state, rings)
 
@@ -1553,7 +1630,11 @@ class EpiphyteClient(discord.Client):
             now = time.time()
             rings = self._cross_section(guild_id, now)
             png = await self._render_bytes(
-                state.structure, state.moisture, self._voice_activity(guild_id, now), rings
+                state.structure,
+                state.moisture,
+                self._voice_activity(guild_id, now),
+                rings,
+                self._wind(guild_id, now),
             )
             try:
                 message = await channel.send(
@@ -1673,7 +1754,11 @@ async def plant(interaction: discord.Interaction) -> None:
     # is currently being shown.
     rings = client._cross_section(guild_id, now)
     png = await client._render_bytes(
-        state.structure, display_moisture, client._voice_activity(guild_id, now), rings
+        state.structure,
+        display_moisture,
+        client._voice_activity(guild_id, now),
+        rings,
+        client._wind(guild_id, now),
     )
     buffer = io.BytesIO(png)
     embed = build_plant_embed(display_moisture, state.structure, rings)

@@ -41,6 +41,16 @@ additive: at a spread of ``0.0``, which is what a server that never uses voice
 always gets, every drawing call below behaves exactly as it did before this
 existed.
 
+One argument to :func:`render` is not a reading of the server at all: ``wind``.
+Somebody is typing in the guild right now, so the crown leans a few pixels
+downwind for as long as that lasts and then stands up again — the only thing
+this module draws that measures nothing, accumulates nothing and is remembered
+by nothing. It is expressed as part of the projection, beside the drought sag,
+because a breeze and a wilt are one posture with two causes. Both wind states
+are fully deterministic, so this module's guarantee is unchanged: the same
+arguments always produce the same bytes, and all that is momentary is which
+arguments the caller passes.
+
 This module has a second entry point, :func:`render_rings`, and it draws
 something else entirely: a cross-section of the trunk, one ring per finished
 calendar year, from :func:`structure.rings`. It takes no structure, no genome
@@ -168,6 +178,26 @@ _ROOT_FLARE_REACH = 0.33
 #: the very foot of the trunk rather than a uniform thickening of its lower third.
 _ROOT_FLARE_FALLOFF = 3.0
 
+#: Furthest the crown's highest tips lean when the air is moving (supersampled
+#: px). Four — against the drought sag's fifty-eight, which is the comparison
+#: that sets the scale: a gust has to be a small fraction of the posture change
+#: that means the plant is in trouble, or it reads as damage instead of weather.
+#: At the final image size this is four pixels of lean at the very top of a
+#: full-frame tree, and one pixel at its midpoint.
+#:
+#: Note that the "share of the frame that changes" measure Phase 17 bounded the
+#: root system with is the wrong instrument here and is deliberately not reused:
+#: roots are a new object appearing in empty soil, so the area they cover *is*
+#: their size, while a lean moves an object that is already there, and shifting
+#: a dense crown by a single pixel already redraws every edge in it. The honest
+#: bound for this effect is the displacement itself, which the two constants
+#: here state exactly.
+_WIND_MAX_SWAY = 4.0 * SUPERSAMPLE
+#: How the lean falls off down the plant. Squared, so the trunk is effectively
+#: still and only the young ends move — the same distribution the drought sag
+#: uses, and the same thing a real breeze does to a tree.
+_WIND_FALLOFF = 2.0
+
 # --- The cross-section (a second picture, not a second plant) -----------------
 #
 # Everything above draws the plant as it stands right now. The cross-section
@@ -230,7 +260,11 @@ def _parch(color: Color, vitality: float) -> Color:
 
 
 def render(
-    structure: Structure, moisture: float, genome: Genome, voice_activity: float = 0.0
+    structure: Structure,
+    moisture: float,
+    genome: Genome,
+    voice_activity: float = 0.0,
+    wind: bool = False,
 ) -> io.BytesIO:
     """Render a plant to a PNG and return it as a ``BytesIO``.
 
@@ -245,6 +279,15 @@ def render(
     to fit. A just-germinated plant (a single node) is drawn as a sprout — a
     sprout has no trunk to flare and no roots worth the name yet, so voice
     activity does not reach it. The returned buffer is rewound to the start.
+
+    ``wind`` is the one argument here that is not a reading of anything (see
+    :func:`structure.wind_is_stirring`): somebody is typing in the guild at this
+    moment, so the crown leans a little. It defaults to ``False`` — still air —
+    and the two states are each fully deterministic, so this function keeps the
+    property the whole project rests on: the same inputs always draw the same
+    bytes. All that is momentary is which of the two the caller asks for. A
+    sprout is left out of it as well: twenty-two pixels of stem have nothing to
+    sway.
     """
     vitality = max(0.0, min(1.0, moisture))
     image = Image.new("RGB", (_W, _H), BACKGROUND)
@@ -254,7 +297,9 @@ def render(
     draw.rectangle((0, earth_top, _W, _H), fill=EARTH)
 
     if len(structure.nodes) > 1:
-        _draw_structure(draw, structure, genome, vitality, earth_top, root_spread(voice_activity))
+        _draw_structure(
+            draw, structure, genome, vitality, earth_top, root_spread(voice_activity), wind
+        )
     else:
         _draw_sprout(draw, vitality, genome, earth_top)
 
@@ -411,7 +456,7 @@ def _epiphyte_world_points(structure: Structure) -> dict[int, tuple[float, float
 
 
 def _projection(
-    points: list[tuple[float, float]], vitality: float, earth_top: int
+    points: list[tuple[float, float]], vitality: float, earth_top: int, sway: float = 0.0
 ) -> tuple[Callable[[float, float], tuple[float, float]], Callable[[float], float]]:
     """Return ``(to_px, height_fraction)`` fitting ``points`` into the frame.
 
@@ -419,6 +464,14 @@ def _projection(
     flips y so it grows upward, and sags the young (high) ends downward when the
     plant is parched. ``height_fraction`` says how far up the plant a given y sits,
     which drives both the stem gradient and that sag.
+
+    ``sway`` is the wind's signed lean, in pixels at the plant's very top,
+    distributed down the body by the same height fraction the sag uses (see
+    :data:`_WIND_MAX_SWAY`). It is deliberately expressed here rather than as a
+    separate drawing pass: a breeze moves the whole standing plant, foliage and
+    epiphyte and all, exactly as drought's sag does — the two are one posture
+    with two causes. At its default ``0.0`` every coordinate this returns is
+    bit-identical to the pre-wind projection.
     """
     xs = [x for x, _ in points]
     ys = [y for _, y in points]
@@ -440,7 +493,8 @@ def _projection(
 
     def to_px(x: float, y: float) -> tuple[float, float]:
         droop = _DROOP_MAX * dryness * height_fraction(y) ** 1.25
-        return (_W / 2 + (x - center_x) * scale, root_y - (y - min_y) * scale + droop)
+        lean = sway * height_fraction(y) ** _WIND_FALLOFF
+        return (_W / 2 + (x - center_x) * scale + lean, root_y - (y - min_y) * scale + droop)
 
     return to_px, height_fraction
 
@@ -581,6 +635,7 @@ def _draw_structure(
     vitality: float,
     earth_top: int,
     spread: float = 0.0,
+    wind: bool = False,
 ) -> None:
     """Draw the whole plant: body and foliage, plus whatever it has earned.
 
@@ -593,10 +648,17 @@ def _draw_structure(
     sits over its own roots. The epiphyte is deliberately left out of both: it
     grows on a branch and never touches the soil, which is exactly what makes it
     an epiphyte.
+
+    ``wind`` leans the standing body (see :func:`_projection`). Which way it
+    leans comes from the plant's own seed, so a given individual always takes
+    the same gust the same way — the same rule its leaf placement, its blossom
+    rotations and its cross-section's silhouette already follow, and the reason
+    a gust is a second deterministic picture rather than a random one.
     """
     epiphyte_world = _epiphyte_world_points(structure)
     points = [(node.x, node.y) for node in structure.nodes] + list(epiphyte_world.values())
-    to_px, height_fraction = _projection(points, vitality, earth_top)
+    sway = _WIND_MAX_SWAY * (1.0 if structure.seed % 2 == 0 else -1.0) if wind else 0.0
+    to_px, height_fraction = _projection(points, vitality, earth_top, sway)
 
     pixels = {node.id: to_px(node.x, node.y) for node in structure.nodes}
     heights = {node.id: height_fraction(node.y) for node in structure.nodes}

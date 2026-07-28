@@ -143,6 +143,16 @@ of its own.
   a ring is finished wood; a plant younger than its first full year simply shows
   itself as usual, and a new generation starts its rings over, since no trunk can
   contain a year in which it did not exist.
+- **A little wind** — while somebody in the server is typing, the plant's crown
+  leans a few pixels, as if the air in the room had moved; a minute and a half
+  after the last keystroke it stands still again. It is the smallest thing in
+  the project and deliberately the least significant: it measures nothing,
+  remembers nothing and changes nothing about how the plant grows — two people
+  typing stir exactly as much air as one, and the moment the bot restarts it has
+  forgotten the weather entirely. Nothing is redrawn for it either; it only ever
+  shows in a picture that was being drawn anyway, so it is something you catch
+  rather than something you are shown. Like the rings, it is not a sixth thing
+  the server's life feeds — it is weather over the plant, not part of it.
 - **Individuality** — every server's plant grows from its own random seed: a
   genome fixing its branching angles, bushiness, vigour, foliage and the colour it
   flowers in, so no two servers ever grow the same plant, and a seed carries those
@@ -262,7 +272,8 @@ lives in the code or repository.
 
 The pure logic — moisture decay and the anti-farming curve (`moisture.py`), the
 plant's genome, growth, dieback, lifecycle, milestones, author breadth,
-temporal rhythm, thread depth and voice activity (`structure.py`), everything it says about itself (`voice.py`),
+temporal rhythm, thread depth, voice activity, the yearly rings and the wind
+(`structure.py`), everything it says about itself (`voice.py`),
 and the shape and colour of the message it says it in (`presentation.py`) — is
 tested with pytest and depends on neither Discord nor Pillow. Rendering
 (`render.py`) is isolated Pillow I/O, and persistence (`storage.py`) is isolated

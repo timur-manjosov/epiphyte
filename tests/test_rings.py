@@ -399,7 +399,7 @@ def _refresh_at(client: bot.EpiphyteClient, guild_id: int, moment: float) -> lis
     client._text_channel = AsyncMock(return_value=channel)
     asked: list[tuple] = []
 
-    async def _capture(plant, moisture_value, voice_activity=0.0, rings=()):
+    async def _capture(plant, moisture_value, voice_activity=0.0, rings=(), wind=False):
         asked.append(rings)
         return b"fake-png"
 
@@ -507,7 +507,10 @@ def test_the_plants_own_picture_is_untouched_by_any_of_this():
     rings can leak into the plant's portrait."""
     genome = genome_from_seed(4242)
     body = grow(germinate(4242), genome, 0.8, 300)
+    # ``wind`` (Phase 20) joined this list; ``rings`` never can. The point of
+    # pinning the whole set is that a ring is not something the plant's own
+    # picture is drawn *with*, however many other arguments it grows.
     assert set(inspect.signature(render.render).parameters) == {
-        "structure", "moisture", "genome", "voice_activity",
+        "structure", "moisture", "genome", "voice_activity", "wind",
     }
     assert render.render(body, 0.8, genome).getvalue() == render.render(body, 0.8, genome).getvalue()

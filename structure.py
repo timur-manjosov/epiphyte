@@ -112,6 +112,14 @@ where every signal above is read forward. The one thing they share with the
 body is where a scar comes from: a ring is scarred exactly when that year's
 dieback killed wood, which is the same event that left the grey branch visible
 in the ordinary picture, counted once and shown twice.
+
+Smaller still, and last, is the wind (:func:`wind_is_stirring`). It is not a
+signal and, unlike the rings, not a record either: it is the one thing here that
+accumulates nothing at all. Somebody is typing in the guild right now, so the
+air moves for a minute and a half and then stills, and nothing anywhere is
+different for it having happened. It is a bool rather than a strength precisely
+so that it can never quietly become a measurement — see the "Wind constants"
+block below.
 """
 
 from __future__ import annotations
@@ -387,6 +395,33 @@ RING_MIN_TICKS: int = 720
 #: and the picture would say "nothing happened" where the truth is "this went
 #: badly".
 RING_MIN_WIDTH_SHARE: float = 0.35
+
+# --- Wind constants (ambience, not a vitality signal, and not a record either) -
+#
+# The rings above are a second picture of the past. The wind is a second picture
+# of *this minute*, and it is the only thing in this module that is neither: it
+# accumulates nothing, is stored nowhere, shapes no body and is remembered by
+# nothing once it passes. Somebody is typing near the plant, so the air moves;
+# they stop, and it stills. That is the whole mechanism, and it is deliberately
+# the least mechanically significant thing in the project — it must never be
+# read as a sixth signal, because it measures nothing.
+#
+# It is a *bool*, not an amount, and that is the load-bearing decision: an
+# intensity would inevitably be an intensity *of something* — how many people
+# are typing, how fast, how long — and that is a measurement, which would make
+# this a signal in ambience's clothing. Two people typing stir exactly as much
+# air as one, for exactly the same reason the plant never counts anything it is
+# not honestly accumulating over real time.
+
+#: How long after the last typing signal the air is still moving. Ninety
+#: seconds, and both bounds of that choice matter. Discord refreshes a typing
+#: indicator roughly every ten seconds while someone keeps typing, so anything
+#: near that would flicker between one keystroke's refresh and the next; and the
+#: heartbeat that redraws the living message is an hour apart (``bot.py``'s
+#: ``TICK_INTERVAL_SECONDS``), so a minute and a half can never become the
+#: plant's normal face — it is a gust caught in passing, in the picture that was
+#: going to be drawn anyway, never a reason to draw one.
+WIND_LINGER_SECONDS: float = 90.0
 
 
 @dataclass(frozen=True)
@@ -1178,6 +1213,28 @@ def ring_layout(rings: Sequence[Ring]) -> tuple[tuple[float, float], ...]:
     # a gap in the record.
     bounds[-1] = (bounds[-1][0], 1.0)
     return tuple(bounds)
+
+
+def wind_is_stirring(seconds_since_typing: float | None) -> bool:
+    """Whether the air around the plant is currently moving.
+
+    ``seconds_since_typing`` is how long ago somebody was last typing in the
+    guild, or ``None`` if nobody has been since the bot started — this module
+    reads no clock, so the caller supplies the elapsed time, exactly as it does
+    for the moisture decay. The answer is a bool rather than a strength on
+    purpose (see the "Wind constants" block above): the wind carries no
+    information about how many people are typing or how hard, because the moment
+    it did it would be a measurement, and a measurement is a signal.
+
+    A value at or below zero — an event timestamped a hair ahead of the local
+    clock — counts as stirring rather than being rejected: it means somebody
+    just typed. Pure, and stored nowhere; the caller holds the last typing
+    moment in memory and forgets it on restart, which is the correct lifetime
+    for weather.
+    """
+    if seconds_since_typing is None:
+        return False
+    return seconds_since_typing <= WIND_LINGER_SECONDS
 
 
 def _jitter_multiplier(rhythm: float) -> float:

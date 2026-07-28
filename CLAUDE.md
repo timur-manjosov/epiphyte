@@ -534,6 +534,72 @@ angelegt.
   `blake2b(seed | Kategorie | Ringzahl)`. Keine Zeile darf die Zahl nennen — die
   steht im sachlichen Instrumentenfeld daneben.
 
+- **Phase 20 — Wind (Tippen als vergängliche Bewegung) ✓:** die kleinste
+  Ergänzung des ganzen Plans, und nach Phase 19 die zweite ohne
+  Vitalitätssignal — **gehört wie die Ringe nie in die Signaltabelle unten**.
+  Anders als die Ringe ist sie aber nicht einmal eine *Aufzeichnung*: Wind ist
+  das einzige Element im Projekt, das **gar nichts** ansammelt, nirgends
+  gespeichert wird und in dem Moment vergessen ist, in dem er vorbei ist.
+  Jemand tippt gerade im Server, also bewegt sich die Luft; er hört auf, und sie
+  steht still. Mehr ist es nicht, und mehr darf es nie werden.
+  **Die eigentliche Spannung war die Determinismus-Zusage.** Das ganze Projekt
+  rendert seeded-deterministisch — gleicher Zustand, gleicher Seed, gleiche
+  Bytes —, und genau darauf beruht jede Byte-Vergleichs-Baseline seit Phase 17.
+  Wind hängt dagegen an einem momentanen Discord-Ereignis ohne Seed. Aufgelöst
+  wird das **nicht** durch eine Ausnahme, sondern durch die Formulierung:
+  `render(..., wind: bool = False)` ist ein *zweites deterministisches Bild*,
+  kein Zufall im Renderer. Beide Zustände sind für sich vollständig
+  reproduzierbar; momentan ist allein, *welches* der beiden der Aufrufer
+  anfordert — dieselbe Wahl-statt-Schicht-Konstruktion wie beim Querschnitt.
+  `wind=False` ist außerdem nicht auf das alte Bild *kalibriert*, sondern
+  byteidentisch damit (die Neigung wird als exakte `+ 0.0`-Addition auf jede
+  Koordinate gelegt), also vergleichen sämtliche bestehenden Baselines
+  unverändert weiter gegen dasselbe Bild wie zuvor.
+  **Magnitude, konkret statt adjektivisch:** eine reine Scherung in
+  `_projection`, also dort, wo der Dürre-Hang (`_DROOP_MAX`) schon sitzt —
+  Windhauch und Welken sind eine Haltung mit zwei Ursachen, kein zweiter
+  Zeichendurchgang. `_WIND_MAX_SWAY` = **4 px** Neigung an der obersten
+  Triebspitze (gegen 58 px Dürre-Hang, also unter einem Vierzehntel), mit
+  `_WIND_FALLOFF` = 2 quadratisch abfallend: auf halber Höhe genau 1 px, am
+  Stammfuß exakt 0. Gemessen bleibt jede veränderte Bildzeile oberhalb der
+  Erdlinie. Die Flächenmetrik aus Phase 17 ist hier bewusst **nicht**
+  wiederverwendet und wäre das falsche Instrument: Wurzeln sind ein *neues*
+  Objekt in leerem Boden, ihre Fläche *ist* ihre Größe — eine Neigung verschiebt
+  ein vorhandenes Objekt, und schon ein einziger Pixel Versatz zeichnet jede
+  Kante einer dichten Krone neu. Der ehrliche Grenzwert ist hier die
+  Verschiebung selbst. Die Richtung der Neigung kommt aus dem Seed der Pflanze
+  (wie Blattsetzung, Blütenrotation und Ring-Silhouette), damit ein Individuum
+  den Windstoß immer gleich nimmt.
+  **Auslöser und Abklingen:** `bot.py`s `on_typing` — ein Standard-Gateway-Event
+  ohne neuen Intent, und das häufigste Ereignis im ganzen Bot. Der Handler ist
+  deshalb **ein** Dict-Eintrag mit einem Float pro Guild: nichts wächst, nichts
+  wird geprunt, ein ganzer Nachmittag Tippen kostet exakt so viel Speicher wie
+  ein einzelner Anschlag. `structure.wind_is_stirring` klingt nach
+  `WIND_LINGER_SECONDS` = **90 s** ab, und beide Grenzen sind der Entwurf:
+  deutlich über Discords eigenem ~10-s-Refresh des Tippindikators, damit die
+  Krone nicht zwischen zwei Anschlägen auf und ab springt, und weit unter dem
+  Stundentakt des Herzschlags, damit Wind nie das Normalgesicht der Pflanze
+  wird. Es wird **kein** zusätzliches Rendering und keine zusätzliche
+  Nachrichten-Bearbeitung ausgelöst: ein Windstoß erscheint nur in einem Bild,
+  das ohnehin gezeichnet wurde (Herzschlag, `/plant`, Reanchor) — etwas, das man
+  erwischt, nicht etwas, das vorgeführt wird.
+  **Mehrere Tippende:** kein Skalieren, und das ist per Typ erzwungen statt
+  kalibriert — die Antwort ist ein `bool`, es gibt also gar kein Stellrad, auf
+  das eine Kopfzahl geschrieben werden könnte. Zwei Tippende bewegen exakt so
+  viel Luft wie eine. Sobald der Wind *irgendetwas* misst, ist er eine Messung,
+  und eine Messung ist ein Signal — er müsste dann den Zulassungstest bestehen,
+  den er (Spot-Event, ohne Akkumulation, von einer Person allein auslösbar)
+  bewusst gar nicht antritt. Genau deshalb misst er nichts.
+  **Geltungsbereich:** serverweit, wie jedes andere Ereignis — die Vorgabe aus
+  „Geltungsbereich: serverweit, nicht kanalweit" gilt auch für einen reinen
+  Ambience-Mechanismus; der gebundene Kanal bleibt Schaufenster, nie Filter.
+  **`voice.py` und `presentation.py` bleiben unverändert,** und hier ist das
+  noch zwingender als bei Phase 17: Wind ist kein Zustand, den die Pflanze
+  trägt, sondern Wetter darüber. Ein Textpool oder ein Embed-Feld dafür wäre
+  entweder ein weiteres Band im ansonsten stabilen Zustand (das den ganzen
+  übrigen Text alle 90 Sekunden neu ziehen ließe — siehe „Tick-Stabilität") oder
+  eine Ansage von etwas, das ausdrücklich nichts bedeutet.
+
 **Offen:**
 
 - **Phase 10 (optional) — Die Umwelt:** Tages- und Jahreszeit-Tönung des
@@ -563,8 +629,10 @@ epiphyte/
 │                        #   Sprachaktivität (voice_is_audible, shared_voice_seconds,
 │                        #   voice_credits, root_spread — treibt nur render.py, nie grow());
 │                        #   Jahresringe (calendar_year, dead_node_count, YearRecord, Ring,
-│                        #   rings, ring_layout — kein Signal, nur ein zweites Bild)
-│                        #                        [Phase 5–9, 11, 12, 15, 16, 17, 19]
+│                        #   rings, ring_layout — kein Signal, nur ein zweites Bild);
+│                        #   Wind (wind_is_stirring — kein Signal und keine Aufzeichnung,
+│                        #   nur Wetter: ein bool, keine Stärke)
+│                        #                    [Phase 5–9, 11, 12, 15, 16, 17, 19, 20]
 ├── voice.py             # REINE LOGIK: die Stimme der Pflanze — VoiceState, Text-Pools,
 │                        #   deterministische Auswahl (siehe Persona-Bibel); Ring-Pools
 │                        #   liegen außerhalb von VoiceState            [Phase 13, 15, 19]
@@ -572,9 +640,10 @@ epiphyte/
 │                        #   Feldstruktur, Bildplatzierung, Footer (siehe „Präsentation");
 │                        #   liefert ein Panel, kein Embed              [Phase 14, 15, 19]
 ├── render.py            # Struktur → PNG via Pillow (gekapselte I/O); Wurzelwerk und
-│                        #   Stammfuß-Verbreiterung aus root_spread; render_rings() als
-│                        #   zweiter Einstiegspunkt (Querschnitt statt Pflanze)
-│                        #                       [Phase 2, erweitert 5–9, 15, 17, 19]
+│                        #   Stammfuß-Verbreiterung aus root_spread; wind als
+│                        #   defaulted-off Scherung neben dem Dürre-Hang; render_rings()
+│                        #   als zweiter Einstiegspunkt (Querschnitt statt Pflanze)
+│                        #                   [Phase 2, erweitert 5–9, 15, 17, 19, 20]
 ├── storage.py           # SQLite: Struktur, Seed, Lebensstatistik, Lineage, Feuchtigkeit,
 │                        #   Kanal/Nachricht, dead_ticks, author_presence, daily_activity,
 │                        #   reactor_presence, thread_activity, voice_presence, yearly_ring
@@ -622,15 +691,20 @@ Jedes „entworfen, noch nicht gebaut"-Signal muss vor der Implementierung den
 Zulassungstest oben bestehen (keine privilegierten Intents, akkumuliert über
 echte Zeit, für eine Einzelperson nicht farmbar).
 
-**Die Jahresringe (Phase 19) fehlen in dieser Tabelle mit Absicht und gehören
-nie hinein.** Sie sind kein Signal: kein Discord-Ereignis speist sie, das nicht
+**Die Jahresringe (Phase 19) und der Wind (Phase 20) fehlen in dieser Tabelle
+mit Absicht und gehören nie hinein.** Sie sind kein Signal: kein Discord-Ereignis speist sie, das nicht
 schon etwas anderes speist, sie erreichen `grow()` nicht, und kein Knoten der
-Pflanze wächst anders, ob es sie gibt oder nicht (`tests/test_rings.py` prüft
-beides über die Signaturen, nicht über Stichproben). Sie sind ein zweites *Bild*
-derselben Geschichte, die die Pflanze ohnehin durchlebt hat — rückwärts gelesen,
-wo jedes Signal oben vorwärts gelesen wird. Wer eine künftige Idee als „noch so
-eine Ringe-Sache" einordnen will, muss sie deshalb trotzdem durch den
-Zulassungstest schicken, sobald sie irgendetwas am Körper ändert.
+Pflanze wächst anders, ob es sie gibt oder nicht (`tests/test_rings.py` und
+`tests/test_wind.py` prüfen beides über die Signaturen, nicht über Stichproben).
+Die Ringe sind ein zweites *Bild* derselben Geschichte, die die Pflanze ohnehin
+durchlebt hat — rückwärts gelesen, wo jedes Signal oben vorwärts gelesen wird.
+Der Wind ist noch weniger als das: keine Aufzeichnung, sondern *Wetter* — er
+sammelt nichts an, wird nirgends gespeichert und ist nach 90 Sekunden restlos
+vergessen. Er ist ausdrücklich **ein `bool`, keine Stärke**, damit er nie
+unbemerkt zur Messung und damit zum Signal werden kann. Wer eine künftige Idee
+als „noch so eine Ringe-Sache" oder „nur Ambience wie der Wind" einordnen will,
+muss sie deshalb trotzdem durch den Zulassungstest schicken, sobald sie
+irgendetwas am Körper ändert — oder sobald sie anfängt, etwas zu *messen*.
 
 ## Reine Logik ⟷ I/O (das Herz der Struktur)
 
