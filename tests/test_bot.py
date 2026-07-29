@@ -1255,100 +1255,99 @@ def test_help_does_not_claim_a_reset_or_a_leaderboard() -> None:
     assert {c.name for c in bot.client.tree.get_commands()} == {"plant", "epiphyte-channel", "help"}
 
 
-# --- Slash command sync: global registration + instant per-guild backfill ---
+# --- Slash command sync: global registration only, one-time duplicate sweep ---
 #
-# The bug this guards against: commands synced only to one fixed guild (the
-# old ``copy_global_to`` + ``sync(guild=...)`` pair in ``setup_hook``) never
-# appear on any other server, invite or no invite. The fix is global sync plus
-# two instant per-guild paths that do not wait on Discord's propagation: one
-# for a guild joining from now on (``on_guild_join``), one for every guild
-# already connected the first time this code runs (``_backfill_guild_command_
-# sync``), gated so it can only ever fire once — a durable database flag, not
-# an in-memory one, since a container restart must not repeat it.
+# The bug this guards against: an earlier fix gave every guild a permanent,
+# guild-specific copy of every command (``copy_global_to`` + ``sync(guild=...)``
+# from a since-removed ``on_guild_join`` handler and a since-removed startup
+# backfill). Once this bot's ordinary global sync also reached one of those
+# guilds, Discord showed every command twice. The fix is to stop creating
+# guild-specific copies at all and, once, sweep every already-connected guild
+# clean of whatever copy it still has — gated so the sweep can only ever fire
+# once, a durable database flag rather than an in-memory one, since a
+# container restart must not repeat it.
 
 
-def test_on_guild_join_copies_and_syncs_commands_to_the_new_guild() -> None:
-    """A freshly joined guild gets its own instant sync, rather than waiting on
-    global propagation, which can take Discord up to an hour."""
-    client = bot.EpiphyteClient()
-    client.tree.copy_global_to = MagicMock()
-    client.tree.sync = AsyncMock()
-    guild = _make_guild(99)
-
-    asyncio.run(client.on_guild_join(guild))
-
-    client.tree.copy_global_to.assert_called_once_with(guild=guild)
-    client.tree.sync.assert_awaited_once_with(guild=guild)
+def test_no_guild_join_handler_creates_permanent_guild_commands() -> None:
+    """There must be no ``on_guild_join`` handler at all: any such handler that
+    calls ``copy_global_to`` + ``sync(guild=...)`` recreates the exact
+    permanent, guild-specific copy this fix removes."""
+    assert not hasattr(bot.EpiphyteClient, "on_guild_join")
 
 
-def test_on_guild_join_swallows_a_sync_failure() -> None:
-    """A failed instant sync (missing permissions, a transient server error) is
-    logged, not raised — a burst of joins from a bot-list listing must not be
-    able to crash gateway dispatch over a single bad guild."""
-    client = bot.EpiphyteClient()
-    client.tree.copy_global_to = MagicMock()
-    client.tree.sync = AsyncMock(side_effect=_http_exception())
-
-    asyncio.run(client.on_guild_join(_make_guild(99)))  # must not raise
-
-
-def test_backfill_syncs_every_already_connected_guild_once(tmp_path) -> None:
-    """On the first run after this fix ships, every guild already connected
-    gets the same instant sync a fresh join would get from now on — not only
-    guilds that join afterwards."""
+def test_cleanup_clears_every_already_connected_guild_once(tmp_path) -> None:
+    """On the first run after this fix ships, every guild already connected has
+    its guild-specific command copy cleared and an empty guild sync pushed, so
+    Discord drops whatever permanent copy it was still holding."""
     client = bot.EpiphyteClient()
     client._storage = storage.Storage(str(tmp_path / "sync.db"))
     guild_a, guild_b = _make_guild(1), _make_guild(2)
     client._connection = MagicMock(guilds=[guild_a, guild_b])
-    client.tree.copy_global_to = MagicMock()
+    client.tree.clear_commands = MagicMock()
     client.tree.sync = AsyncMock()
 
-    asyncio.run(client._backfill_guild_command_sync())
+    asyncio.run(client._clear_guild_command_duplicates())
 
-    assert client.tree.copy_global_to.call_args_list == [call(guild=guild_a), call(guild=guild_b)]
+    assert client.tree.clear_commands.call_args_list == [call(guild=guild_a), call(guild=guild_b)]
     assert client.tree.sync.await_args_list == [call(guild=guild_a), call(guild=guild_b)]
-    assert client._storage.guild_command_backfill_done() is True
+    assert client._storage.guild_command_cleanup_done() is True
     client._storage.close()
 
 
-def test_backfill_never_runs_twice_even_across_a_restart(tmp_path) -> None:
+def test_cleanup_never_touches_the_global_command_tree(tmp_path) -> None:
+    """``clear_commands(guild=...)`` must only ever be called with a guild —
+    never bare — since a bare call would wipe the global registration and take
+    every command down everywhere, not just the guild-specific duplicate."""
+    client = bot.EpiphyteClient()
+    client._storage = storage.Storage(str(tmp_path / "sync.db"))
+    client._connection = MagicMock(guilds=[_make_guild(1)])
+    client.tree.clear_commands = MagicMock()
+    client.tree.sync = AsyncMock()
+
+    asyncio.run(client._clear_guild_command_duplicates())
+
+    for call_args in client.tree.clear_commands.call_args_list:
+        assert call_args.kwargs.get("guild") is not None
+    client._storage.close()
+
+
+def test_cleanup_never_runs_twice_even_across_a_restart(tmp_path) -> None:
     """The flag lives in the database, not just in memory, so a second process
-    opening the same file — a container restart — does not sync again. Left
+    opening the same file — a container restart — does not sweep again. Left
     unguarded this would cost one Discord API call per connected guild on
     every restart, forever, for a migration that only ever needed to run once."""
     db_path = str(tmp_path / "sync.db")
     first = bot.EpiphyteClient()
     first._storage = storage.Storage(db_path)
     first._connection = MagicMock(guilds=[_make_guild(1)])
-    first.tree.copy_global_to = MagicMock()
+    first.tree.clear_commands = MagicMock()
     first.tree.sync = AsyncMock()
-    asyncio.run(first._backfill_guild_command_sync())
+    asyncio.run(first._clear_guild_command_duplicates())
     first._storage.close()
 
     second = bot.EpiphyteClient()
     second._storage = storage.Storage(db_path)
     second._connection = MagicMock(guilds=[_make_guild(1)])
-    second.tree.copy_global_to = MagicMock()
+    second.tree.clear_commands = MagicMock()
     second.tree.sync = AsyncMock()
-    asyncio.run(second._backfill_guild_command_sync())
+    asyncio.run(second._clear_guild_command_duplicates())
 
-    second.tree.copy_global_to.assert_not_called()
+    second.tree.clear_commands.assert_not_called()
     second.tree.sync.assert_not_awaited()
     second._storage.close()
 
 
-def test_backfill_marks_done_even_when_one_guild_sync_fails(tmp_path) -> None:
-    """A single guild's sync failing during the backfill (see
-    ``_sync_guild_commands_instantly``) must not leave the flag unset forever
-    and turn a one-time migration into one that retries — and fails the same
-    way — on every future restart."""
+def test_cleanup_marks_done_even_when_one_guild_sync_fails(tmp_path) -> None:
+    """A single guild's sync failing during the sweep must not leave the flag
+    unset forever and turn a one-time migration into one that retries — and
+    fails the same way — on every future restart."""
     client = bot.EpiphyteClient()
     client._storage = storage.Storage(str(tmp_path / "sync.db"))
     client._connection = MagicMock(guilds=[_make_guild(1), _make_guild(2)])
-    client.tree.copy_global_to = MagicMock()
+    client.tree.clear_commands = MagicMock()
     client.tree.sync = AsyncMock(side_effect=_http_exception())
 
-    asyncio.run(client._backfill_guild_command_sync())  # must not raise
+    asyncio.run(client._clear_guild_command_duplicates())  # must not raise
 
-    assert client._storage.guild_command_backfill_done() is True
+    assert client._storage.guild_command_cleanup_done() is True
     client._storage.close()

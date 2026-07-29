@@ -78,18 +78,23 @@ tables and unlike the two counter tables: rings are wood this particular trunk
 laid down, and no cross-section can contain a year in which this body did not
 exist. See :func:`structure.rings`.
 
-A last, single-row table, ``command_sync``, holds nothing about any plant at
-all: one flag recording whether the guilds this process was already connected
-to on some past startup have been given an instant, guild-specific command
-sync. It exists only because Epiphyte once synced its slash commands to a
-single fixed test guild instead of globally (see ``bot.EpiphyteClient.
-setup_hook``), which left every other guild it was already on silently
-commandless until Discord's global propagation caught up on its own.
-Backfilling every connected guild is worth doing once, right after the fix
-ships, and worth never doing again afterwards — repeating it on every
-container restart would mean one Discord API call per connected guild every
-time the process restarts, for a one-time migration that stays finished
-forever once it has run. See ``bot.EpiphyteClient.on_ready``.
+A last, single-row table, ``guild_command_cleanup``, holds nothing about any
+plant at all: one flag recording whether the guilds this process was already
+connected to on some past startup have had their permanent, guild-specific
+slash-command copy stripped. It exists because an earlier deploy gave every
+guild it saw a permanent copy of every command via ``copy_global_to`` +
+``sync(guild=...)`` (through a since-removed ``on_guild_join`` handler and a
+since-removed startup backfill), which never expires on its own and shows
+every command twice once the ordinary global sync (see ``bot.EpiphyteClient.
+setup_hook``) also reaches that guild. Sweeping every connected guild clean of
+that copy is worth doing once, right after the fix ships, and worth never
+doing again afterwards — repeating it on every container restart would mean
+one Discord API call per connected guild every time the process restarts, for
+a one-time migration that stays finished forever once it has run. This
+supersedes an earlier table of the same shape (also named ``command_sync``)
+that gated the now-removed backfill itself; it is dropped rather than reused
+so that guilds it had already marked "done" still get swept by this one. See
+``bot.EpiphyteClient.on_ready``.
 """
 
 from __future__ import annotations
@@ -252,11 +257,16 @@ class Storage:
             )
             """
         )
+        # The old backfill flag this superseded (see the module docstring's note
+        # on ``guild_command_cleanup``) is dropped rather than migrated in place,
+        # so a guild it had already marked "done" is not mistaken for one this
+        # newer, differently-scoped cleanup has actually swept.
+        self._connection.execute("DROP TABLE IF EXISTS command_sync")
         self._connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS command_sync (
-                id                  INTEGER NOT NULL PRIMARY KEY CHECK (id = 0),
-                guild_backfill_done INTEGER NOT NULL DEFAULT 0
+            CREATE TABLE IF NOT EXISTS guild_command_cleanup (
+                id            INTEGER NOT NULL PRIMARY KEY CHECK (id = 0),
+                cleanup_done  INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -731,23 +741,24 @@ class Storage:
         self._connection.execute("DELETE FROM yearly_ring WHERE guild_id = ?", (guild_id,))
         self._connection.commit()
 
-    def guild_command_backfill_done(self) -> bool:
-        """Whether the once-only, already-connected-guilds command sync has run.
+    def guild_command_cleanup_done(self) -> bool:
+        """Whether the once-only, already-connected-guilds command cleanup has run.
 
-        See the module docstring's note on ``command_sync``: this is ``True``
-        forever once :meth:`mark_guild_command_backfill_done` has been called on
-        any past startup of this database, on this or an earlier deploy.
+        See the module docstring's note on ``guild_command_cleanup``: this is
+        ``True`` forever once :meth:`mark_guild_command_cleanup_done` has been
+        called on any past startup of this database, on this or an earlier
+        deploy.
         """
         row = self._connection.execute(
-            "SELECT guild_backfill_done FROM command_sync WHERE id = 0"
+            "SELECT cleanup_done FROM guild_command_cleanup WHERE id = 0"
         ).fetchone()
-        return row is not None and bool(row["guild_backfill_done"])
+        return row is not None and bool(row["cleanup_done"])
 
-    def mark_guild_command_backfill_done(self) -> None:
-        """Record that the once-only guild command backfill has run."""
+    def mark_guild_command_cleanup_done(self) -> None:
+        """Record that the once-only guild command cleanup has run."""
         self._connection.execute(
-            "INSERT INTO command_sync (id, guild_backfill_done) VALUES (0, 1) "
-            "ON CONFLICT (id) DO UPDATE SET guild_backfill_done = 1"
+            "INSERT INTO guild_command_cleanup (id, cleanup_done) VALUES (0, 1) "
+            "ON CONFLICT (id) DO UPDATE SET cleanup_done = 1"
         )
         self._connection.commit()
 

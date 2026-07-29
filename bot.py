@@ -669,15 +669,20 @@ class EpiphyteClient(discord.Client):
     async def setup_hook(self) -> None:
         """Open the database, load states, sync commands, and start the tick.
 
-        The commands are always synced globally, so Epiphyte works on every
-        guild it is invited to, not only a fixed test guild — Discord's global
-        propagation can take up to an hour to reach every client, which is what
-        :meth:`on_guild_join` and the one-time backfill in :meth:`on_ready` exist
-        to work around. If ``EPIPHYTE_GUILD_ID`` is set, this also clears any
-        guild-specific commands still registered there from before global sync
-        existed; left in place, that guild would end up with two copies of every
-        command once the global sync below reaches it too. The metabolic tick's
-        first beat is one interval away, by when the bot is ready.
+        Commands are synced globally, and *only* globally — never permanently to
+        any individual guild. A guild-specific registration and the global one
+        are two distinct entries to Discord even when they share a name, so a
+        guild that keeps a permanent guild-specific copy shows every command
+        twice as soon as global propagation (which can take Discord up to an
+        hour) reaches it too. If ``EPIPHYTE_GUILD_ID`` is set, this also clears
+        any guild-specific commands still registered there from an older deploy
+        that synced to it directly, for exactly that reason —
+        ``clear_commands(guild=...)`` only drops that guild's own copy from the
+        local tree and never touches the global one, so the ``sync()`` below is
+        unaffected. Every other guild that picked up a permanent copy from a
+        past deploy is swept once, on the first ready, by
+        :meth:`_clear_guild_command_duplicates`. The metabolic tick's first beat
+        is one interval away, by when the bot is ready.
         """
         self._storage = storage.Storage()
         self._states = self._storage.load_all()
@@ -1621,63 +1626,53 @@ class EpiphyteClient(discord.Client):
         self._presence_index += 1
         await self.change_presence(activity=discord.Activity(type=ACTIVITY_TYPES[kind], name=name))
 
-    async def _sync_guild_commands_instantly(self, guild: discord.Guild) -> None:
-        """Copy the global commands into one guild and sync just that guild.
+    async def _clear_guild_command_duplicates(self) -> None:
+        """Once ever, strip every already-connected guild's permanent command copy.
 
-        Global registration (``setup_hook``) can take Discord up to an hour to
-        reach every client. Doing this instead makes commands visible in this
-        one guild right away. Shared by :meth:`on_guild_join`, for a guild
-        joined just now, and :meth:`_backfill_guild_command_sync`, for every
-        guild already connected at startup. A sync failure (permissions, a
-        transient 5xx) is logged and swallowed rather than raised — one bad
-        guild must not stop the loop the backfill runs it in, and this guild
-        still gets its commands eventually once global propagation reaches it.
+        A past deploy gave every guild it saw — through a since-removed
+        ``on_guild_join`` handler and a since-removed startup backfill — a
+        permanent guild-specific copy of every command via ``copy_global_to`` +
+        ``sync(guild=...)``. Those copies never expire on their own, and once
+        this bot's ordinary global sync (``setup_hook``) also reaches a guild,
+        Discord shows both: the same command listed twice. This clears the
+        guild-specific copy the same way ``setup_hook`` already does for
+        ``EPIPHYTE_GUILD_ID`` — ``clear_commands(guild=guild)`` only empties
+        that guild's entry in the local tree, never the global one, so the
+        follow-up ``sync(guild=guild)`` deletes Discord's guild-specific copy
+        and leaves the single global registration standing. Run once, for every
+        guild connected right now, and never again: :meth:`storage.Storage.
+        guild_command_cleanup_done` makes this a true one-time migration,
+        persisted in the database rather than in memory, so a container restart
+        mid-sweep resumes as "already done" instead of repeating one Discord API
+        call per guild forever. A guild that joins fresh after this has run
+        never picked up a guild-specific copy in the first place, so it needs no
+        sweep of its own.
         """
-        self.tree.copy_global_to(guild=guild)
-        try:
-            await self.tree.sync(guild=guild)
-        except discord.HTTPException:
-            _log.exception("Could not sync commands to guild %s.", guild.id)
-
-    async def _backfill_guild_command_sync(self) -> None:
-        """Once ever, give every already-connected guild an instant command sync.
-
-        Exists for guilds Epiphyte was already on before global sync existed
-        (see ``setup_hook``): without this, those guilds would sit commandless
-        until Discord's global propagation happened to reach them on its own.
-        :meth:`storage.Storage.guild_command_backfill_done` makes this a true
-        one-time migration — persisted in the database, not just this process
-        — so it never repeats on a later restart and never turns into one
-        Discord API call per connected guild every time the container restarts.
-        """
-        if self._storage is None or self._storage.guild_command_backfill_done():
+        if self._storage is None or self._storage.guild_command_cleanup_done():
             return
         for guild in self.guilds:
-            await self._sync_guild_commands_instantly(guild)
-        self._storage.mark_guild_command_backfill_done()
-        _log.info("Backfilled instant command sync for %d already-connected guild(s).", len(self.guilds))
+            self.tree.clear_commands(guild=guild)
+            try:
+                await self.tree.sync(guild=guild)
+            except discord.HTTPException:
+                _log.exception("Could not clear duplicate commands for guild %s.", guild.id)
+        self._storage.mark_guild_command_cleanup_done()
+        _log.info(
+            "Cleared duplicate guild-specific commands for %d already-connected guild(s).",
+            len(self.guilds),
+        )
 
     async def on_ready(self) -> None:
-        """Start the presence rotation and, once ever, backfill guild command sync.
+        """Start the presence rotation and, once ever, sweep duplicate guild commands.
 
         ``on_ready`` can fire again on every reconnect, unlike ``setup_hook``, so
         the presence loop is only started if it is not already running; the
-        backfill guards itself the same way, but durably (see
-        :meth:`_backfill_guild_command_sync`).
+        sweep guards itself the same way, but durably (see
+        :meth:`_clear_guild_command_duplicates`).
         """
         if not self._rotate_presence.is_running():
             self._rotate_presence.start()
-        await self._backfill_guild_command_sync()
-
-    async def on_guild_join(self, guild: discord.Guild) -> None:
-        """Give a newly joined guild its commands immediately.
-
-        See :meth:`_sync_guild_commands_instantly` — the same trick
-        :meth:`_backfill_guild_command_sync` performs once for every guild
-        already connected at startup, run here for exactly the one guild that
-        just joined.
-        """
-        await self._sync_guild_commands_instantly(guild)
+        await self._clear_guild_command_duplicates()
 
     # --- the living channel message (I/O) ------------------------------------
 
