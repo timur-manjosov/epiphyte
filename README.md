@@ -36,7 +36,9 @@ These are not defaults awaiting a config flag. They are the design.
   number is meant to stay small for the lifetime of the project.
 - **No settings, no themes, no options.** Everything about how the plant looks
   and what it says is *derived* from state. If it could be chosen, it would stop
-  being a measurement.
+  being a measurement. The one button in the project — the readings toggle on
+  `/plant` — is not an exception to this: it is a momentary way of looking at one
+  private snapshot, stored nowhere, changing nothing for anyone else.
 - **No leaderboard, ever.** The plant is a mirror, not a scoreboard. It says
   nothing about who talked most.
 - **No privileged gateway intents.** `discord.Intents.default()` is the whole
@@ -150,22 +152,37 @@ rather than alive.
 Operational messages — permissions, setup, `/help` — stay deliberately plain.
 Nobody debugging a channel binding should have to decode poetry.
 
-## The frame is a readout too
+## The message in the channel is the plant, and nothing else
 
-The message *around* the plant is shaped by what the plant is going through, not
-by one template with substituted values. Each life event gets its own accent
-colour and its own field layout:
+The living message carries a **full-size picture, the plant's own words, and a
+colour read off its condition.** No moisture percentage, no stage, no age, no
+node count. That message is the one surface nobody opted into — it sits in a
+channel people are using for something else and redraws itself every hour — and a
+number beside a picture is the one thing guaranteed to be read instead of it.
 
-- Leaf green when steady, sky blue when flourishing, gold at first thirst, brown
-  in drought, red while a drought is actively costing wood, grey at death — and
-  the plant's *own* flower colour while it is in bloom.
-- The instrument row opens and closes with the plant: a full row of readings
-  when it is thriving, fewer as it dries, none at all at germination and death,
-  where there is nothing to measure that the plant hasn't said better.
-- Beneath it, one quiet constant: a seed-derived sigil, generation, and age in
-  days.
+The colour is still a readout, and still its own per event: leaf green when
+steady, sky blue when flourishing, gold at first thirst, brown in drought, red
+while a drought is actively costing wood, grey at death — and the plant's *own*
+flower colour while it is in bloom. Beneath it, one quiet constant: a
+seed-derived sigil, generation, and age in days.
 
 Like everything else here, it is derived, not chosen. There is no theme to pick.
+
+### The readings are one button away
+
+Every instrument that used to sit beside the picture still exists — all of it
+moved behind a button on `/plant`, which is private to whoever ran it. Press
+**Readings** and the same message turns over: the plant steps back to a
+thumbnail, and every measurement the plant currently has appears at once —
+moisture, stage, age, growing tips, wood lost, and, where the plant has actually
+earned them, its flowerings, its passenger, the line behind it, and its finished
+years. Press **The plant** and it turns back.
+
+Both faces are built from a single reading of the state, so the numbers always
+describe the same instant as the picture beside them; it is a snapshot, not a
+live gauge. The button greys itself out after three minutes and leaves nothing
+behind. This is not a setting: it changes nothing for the next person who looks,
+and the channel message never has a button at all.
 
 ## Two things that are not signals
 
@@ -245,8 +262,9 @@ directory, so each server's plant survives restarts.
 2. **Chat anywhere in the server.** Every message quietly waters the plant; it
    grows and withers in that one message on its own, over days, with nobody
    watching.
-3. **`/plant`** *(optional)* — a private snapshot right now, and a nudge to
-   bring the living message back down if it has scrolled away.
+3. **`/plant`** *(optional)* — a private snapshot right now, with a button for
+   every reading behind it, and a nudge to bring the living message back down if
+   it has scrolled away.
 
 ## Configuration
 
@@ -262,8 +280,8 @@ Entirely environment variables. No secret ever lives in the code or repository.
 | Command | What it does |
 |---|---|
 | `/epiphyte-channel #channel` | Choose the channel the plant is displayed in, and post its living message there. Requires **Manage Channels** or **Administrator**. |
-| `/plant` | Show a private snapshot now, and re-anchor the living message if it has scrolled away. Never grows the plant — the heartbeat does that. |
-| `/help` | A private, paginated explanation of what Epiphyte is and what its commands do. |
+| `/plant` | Show a private snapshot now, with a button that turns it over to every reading behind it, and re-anchor the living message if it has scrolled away. Never grows the plant — the heartbeat does that. |
+| `/help` | A private, paginated explanation, in five pages: what Epiphyte is, what it reads, its commands, what arrives on its own, and what is permanent. |
 
 ## Two clocks
 

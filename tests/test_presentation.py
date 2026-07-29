@@ -1,11 +1,19 @@
 """Tests for how the plant is framed. No Pillow, no Discord, no persistence.
 
-Four properties matter here, and they are what the "Präsentation" section of
+The properties that matter here are what the "Präsentation" section of
 ``CLAUDE.md`` commits to: the frame is a deterministic function of the plant's
-state (same state, same colour, same shape — across processes too), every life
-event genuinely has a *different* shape rather than one template with swapped
-values, no event falls through to a generic default, and none of this added a
-command or a setting for anyone to configure.
+state (same state, same colour, same words — across processes too), no event falls
+through to a generic default, every event's instrument row is still its own rather
+than one template with swapped values, and none of this added a command or a
+setting for anyone to configure.
+
+Since the ambient/readings split, one more property joins them and gets the most
+attention below: **the living channel message carries no instruments at all.**
+That message is seen by everyone in a server whether they asked for it or not, and
+the whole point of the split is that it shows the plant and nothing else. The
+per-event rows still exist — they were relocated, not deleted — and the tests for
+them now read them where they now live: through ``_fields`` directly, and through
+the readings panel assembled out of it.
 
 ``test_no_new_command_surface`` is the one test here that touches ``bot`` at all,
 and only to count its commands — the point of this module is that the design
@@ -200,28 +208,46 @@ def test_different_seeds_wear_different_sigils():
 # --- Distinct shapes, not one template ----------------------------------------
 
 
-def _signature(panel: presentation.Panel) -> tuple:
-    """The panel's *structure*, with every value stripped out.
+def _row(event: LifeEvent) -> tuple[presentation.Field, ...]:
+    """The instrument row ``presentation`` builds for one event, on its own plant.
 
-    Field names, their widths and where the image sits — deliberately not the
-    numbers in them, so two events that differ only in the values they plug into
-    the same row collide here instead of passing.
+    Reaches into ``_fields`` deliberately. Since the split these rows no longer
+    reach the living message, but they are not gone: they are the readings panel's
+    single source of truth, and the design property they carry — one event, one
+    shape — is still worth pinning down at the place that decides it.
+
+    The cross-section has no entry in ``_cases()`` — it is resolved from a record
+    rather than from a condition, so it borrows the ordinary steady plant, exactly
+    as ``_panels()`` does.
     """
-    return (
-        tuple((field.name, field.inline) for field in panel.fields),
-        panel.image,
-    )
+    rings = _RINGS if event is LifeEvent.RINGS else ()
+    plant, moisture_value = _cases()[LifeEvent.STEADY if rings else event]
+    return presentation._fields(event, plant, moisture_value, TICK, rings)
 
 
-def test_every_life_event_has_its_own_field_structure():
-    """No two events may share a field row — that is the whole bar for this phase.
+def _names(fields: tuple[presentation.Field, ...]) -> tuple[str, ...]:
+    """The row's shape with every value stripped out — names only.
 
-    Compared by shape alone (see ``_signature``): an event that merely swapped the
-    numbers inside another event's row would be caught here.
+    Deliberately not the numbers, so two events that differ only in what they plug
+    into the same row collide here instead of passing.
     """
-    signatures = {event: _signature(panel) for event, panel in _panels().items()}
-    assert len(set(signatures.values())) == len(LifeEvent), (
-        f"life events share a field structure: {signatures}"
+    return tuple(field.name for field in fields)
+
+
+def test_every_event_with_instruments_has_its_own_row():
+    """No two events may share an instrument row, values aside.
+
+    The two exceptions are the two ends of a life: germination and death both have
+    an empty row, because at both there is nothing to measure that the plant has
+    not already said better itself. Everything between them is distinct.
+    """
+    rows = {event: _names(_row(event)) for event in LifeEvent}
+    assert rows[LifeEvent.GERMINATION] == ()
+    assert rows[LifeEvent.DEATH] == ()
+
+    populated = {event: row for event, row in rows.items() if row}
+    assert len(set(populated.values())) == len(populated), (
+        f"life events share an instrument row: {populated}"
     )
 
 
@@ -265,29 +291,9 @@ def test_bloom_accent_stays_distinct_from_fixed_accents_at_every_intensity():
             assert presentation.accent(LifeEvent.BLOOM, seed, intensity) not in fixed
 
 
-def test_beginnings_accompany_the_words_and_everything_else_leads_with_the_picture():
-    """A seedling is a few pixels of thread; it does not get the full-width slot."""
-    panels = {panel.event: panel for panel in _panels().values()}
-    for event in (LifeEvent.GERMINATION, LifeEvent.REBIRTH):
-        assert panels[event].image is ImagePlacement.THUMBNAIL
-    for event in set(LifeEvent) - {LifeEvent.GERMINATION, LifeEvent.REBIRTH}:
-        assert panels[event].image is ImagePlacement.FULL
-
-
-def test_death_is_the_only_full_image_with_nothing_beside_it():
-    """At death the bare grey body is the message; the frame gets out of its way."""
-    plant, moisture_value = _cases()[LifeEvent.DEATH]
-    panel = presentation.compose(plant, moisture_value, TICK)
-    assert panel.fields == ()
-    assert panel.image is ImagePlacement.FULL
-
-
-def test_the_panel_opens_and_closes_with_the_plant():
+def test_the_instrument_row_opens_and_closes_with_the_plant():
     """Instrument count tracks how much there is to measure, not a fixed layout."""
-    counts = {
-        event: len(presentation.compose(plant, moisture_value, TICK).fields)
-        for event, (plant, moisture_value) in _cases().items()
-    }
+    counts = {event: len(_row(event)) for event in LifeEvent}
     assert counts[LifeEvent.GERMINATION] == 0
     assert counts[LifeEvent.DROUGHT] < counts[LifeEvent.THIRST]
     assert counts[LifeEvent.THIRST] < counts[LifeEvent.STEADY]
@@ -296,56 +302,81 @@ def test_the_panel_opens_and_closes_with_the_plant():
 
 def test_dieback_reports_the_wood_it_cost_instead_of_a_second_weather_reading():
     """The one state that destroys body permanently says how much, by name."""
-    plant, moisture_value = _cases()[LifeEvent.DIEBACK]
-    panel = presentation.compose(plant, moisture_value, TICK)
-    lost = next(field for field in panel.fields if field.name == "Wood lost")
+    lost = next(field for field in _row(LifeEvent.DIEBACK) if field.name == "Wood lost")
     assert lost.value == "60 of 300"
 
 
 def test_rebirth_is_the_only_event_that_names_its_line():
     """Lineage belongs to the moment a successor comes up, not to every heartbeat."""
-    panels = {
-        event: presentation.compose(plant, moisture_value, TICK)
-        for event, (plant, moisture_value) in _cases().items()
-    }
-    named = {
-        event
-        for event, panel in panels.items()
-        if any(field.name == "Its line" for field in panel.fields)
-    }
+    named = {event for event in LifeEvent if any(f.name == "Its line" for f in _row(event))}
     assert named == {LifeEvent.REBIRTH}
-    line = next(f for f in panels[LifeEvent.REBIRTH].fields if f.name == "Its line")
+    line = next(f for f in _row(LifeEvent.REBIRTH) if f.name == "Its line")
     assert line.value == "2 before it · 1 flowered"
 
 
-def test_a_milestone_the_event_is_about_spans_the_whole_width():
-    """Bloom and epiphyte are lifted out of the text; nothing else ever is."""
-    for event, name in ((LifeEvent.BLOOM, "In flower"), (LifeEvent.EPIPHYTE, "Habitat")):
+# --- The ambient panel: the plant, and nothing beside it ----------------------
+
+
+def test_the_living_message_carries_no_instruments_on_any_event():
+    """The one property this whole split exists for, asserted over every event.
+
+    The cross-section is the single, argued-for exception (see ``compose``): a
+    record nobody can date is not a record, and the plant is forbidden from
+    counting its own years out loud.
+    """
+    for event, panel in _panels().items():
+        if event is LifeEvent.RINGS:
+            continue
+        assert panel.fields == (), f"{event} still shows instruments on the living message"
+
+
+def test_the_cross_section_keeps_its_row_including_the_moisture_rider():
+    """Phase 19's exception survives the stripping, in full and in its own order.
+
+    Two readings of the record, then the present weather last — the ordering is
+    the part that matters: it is what stops the once-a-year retrospective from
+    hiding a drought that is running on the day it happens to fall.
+    """
+    panel = _panels()[LifeEvent.RINGS]
+    assert _names(panel.fields) == ("Rings", "Scar rings", "Moisture")
+    assert panel.fields[0].value == "3 years"
+    assert panel.fields[1].value == "2027"
+
+
+def test_the_living_message_always_leads_with_the_full_size_picture():
+    """Every event, without exception — including the two that used to be thumbnails.
+
+    A germinating or newly reborn plant being a few pixels of thread in a lot of
+    soil is *true*, and the panel that exists to show the plant should show it.
+    """
+    for event, panel in _panels().items():
+        assert panel.image is ImagePlacement.FULL, f"{event} does not lead with the picture"
+
+
+def test_a_germinating_and_a_reborn_plant_are_full_size_and_wordless_of_instruments():
+    """The two events the old frame treated as exceptions, checked directly."""
+    for event in (LifeEvent.GERMINATION, LifeEvent.REBIRTH):
         plant, moisture_value = _cases()[event]
         panel = presentation.compose(plant, moisture_value, TICK)
-        promoted = next(field for field in panel.fields if field.name == name)
-        assert promoted.inline is False
-        assert promoted.value  # the plant's own words, not a restated number
-        assert promoted.value not in panel.body
-
-    for event, (plant, moisture_value) in _cases().items():
-        panel = presentation.compose(plant, moisture_value, TICK)
-        wide = [field for field in panel.fields if not field.inline]
-        assert len(wide) == (1 if event in (LifeEvent.BLOOM, LifeEvent.EPIPHYTE) else 0)
+        assert panel.event is event
+        assert panel.image is ImagePlacement.FULL
+        assert panel.fields == ()
+        assert panel.title and panel.body  # still the plant's own words
 
 
-def test_a_carried_milestone_the_event_is_not_about_stays_in_the_text():
-    """A flowering plant that has also seeded says so in its words, not in a field.
+def test_every_milestone_the_plant_carries_stays_in_its_own_words():
+    """Nothing is lifted out of the text into a field anymore — there is no field.
 
-    Only the milestone the event *is* about is promoted; the rest keep their place
-    in the description, so the field row never turns into a milestone list.
+    A flowering plant that has also seeded says both in the body, in the plant's
+    own words, rather than having one of them restated as a promoted row.
     """
     plant, moisture_value = _cases()[LifeEvent.BLOOM]
     panel = presentation.compose(plant, moisture_value, TICK)
     state = voice.read_state(plant, moisture_value)
-    assert state.seeded  # the case plant has flowered long enough to set seed
-    assert len([f for f in panel.fields if not f.inline]) == 1
-    assert panel.body.count("\n\n") == 1  # passage, then the remaining milestone
+    assert state.blooming and state.seeded
+    for line in voice.milestone_lines(state):
+        assert line in panel.body
+    assert panel.fields == ()
 
 
 # --- The footer: the one constant --------------------------------------------
@@ -380,33 +411,159 @@ def test_the_footer_carries_the_permanent_marks():
 def test_age_is_reported_in_days_not_growth_steps():
     """A step is a constant real duration, so it is shown as one a reader owns."""
     plant, moisture_value = _cases()[LifeEvent.STEADY]  # 900 steps at one per hour
-    panel = presentation.compose(plant, moisture_value, TICK)
-    assert "37 days" in panel.footer
-    assert next(f for f in panel.fields if f.name == "Age").value == "37 days"
+    assert "37 days" in presentation.compose(plant, moisture_value, TICK).footer
+    readings = presentation.compose_instruments(plant, moisture_value, TICK)
+    assert next(f for f in readings.fields if f.name == "Age").value == "37 days"
 
 
 # --- Tick stability ------------------------------------------------------------
 
 
 def test_an_ordinary_heartbeat_does_not_reshape_the_frame():
-    """Growth within a chapter, at an unchanged band, keeps colour and shape.
+    """Growth within a chapter, at an unchanged band, keeps colour and words.
 
     The same rule the voice already follows: the living message is rebuilt every
-    heartbeat, and rebuilding must not read as the frame changing its mind.
+    heartbeat, and rebuilding must not read as the frame changing its mind. With
+    the instruments gone the frame has *less* that can move between heartbeats,
+    not more — the moisture percentage was the one thing on it that used to.
     """
     before = presentation.compose(_plant(300, steps=900), 0.50, TICK)
     after = presentation.compose(_plant(330, steps=901), 0.55, TICK)
     assert after.event is before.event
     assert after.accent == before.accent
-    assert _signature(after) == _signature(before)
+    assert (after.title, after.body, after.image) == (before.title, before.body, before.image)
 
 
 def test_crossing_into_dieback_reshapes_the_frame():
-    """A transition that genuinely matters does change colour and shape."""
+    """A transition that genuinely matters does change colour and words."""
     withered = presentation.compose(_plant(300, steps=900), 0.12, TICK)
     parched = presentation.compose(_plant(300, dead=10, steps=900), 0.03, TICK)
+    assert parched.event is not withered.event
     assert parched.accent != withered.accent
-    assert _signature(parched) != _signature(withered)
+    assert (parched.title, parched.body) != (withered.title, withered.body)
+
+
+def test_a_percentage_no_longer_moves_under_the_picture_between_heartbeats():
+    """Two heartbeats an hour apart, at different moisture, are the same panel.
+
+    The strongest form of the tick-stability rule, and one the frame could not
+    make before: a moisture field re-rendered every hour meant the living message
+    visibly changed on heartbeats where nothing about the plant had.
+    """
+    plant = _plant(300, steps=900)
+    assert presentation.compose(plant, 0.50, TICK) == presentation.compose(plant, 0.55, TICK)
+
+
+# --- The readings panel: everything, measured, behind a button ----------------
+
+
+def test_the_readings_panel_carries_every_instrument_the_plant_has():
+    """The union of every applicable event's row, and nothing missing from it."""
+    plant, moisture_value = _cases()[LifeEvent.FLOURISHING]
+    readings = presentation.compose_instruments(plant, moisture_value, TICK)
+    assert _names(readings.fields) == ("Moisture", "Stage", "Age", "Crown", "Wood lost")
+
+
+def test_the_readings_panel_never_repeats_an_instrument():
+    """Several events' rows share a moisture reading; it must appear exactly once."""
+    for plant, moisture_value in _cases().values():
+        for rings in ((), _RINGS):
+            names = _names(presentation.compose_instruments(plant, moisture_value, TICK, rings).fields)
+            assert len(names) == len(set(names)), names
+
+
+def test_the_readings_panel_reads_the_current_state_not_a_generic_one():
+    """Values come from the plant that was passed, at the moisture that was passed."""
+    plant, _ = _cases()[LifeEvent.DIEBACK]
+    dry = presentation.compose_instruments(plant, 0.03, TICK)
+    assert next(f for f in dry.fields if f.name == "Moisture").value == "3%"
+    assert next(f for f in dry.fields if f.name == "Wood lost").value == "60 of 300"
+
+    wet = presentation.compose_instruments(plant, 0.91, TICK)
+    assert next(f for f in wet.fields if f.name == "Moisture").value == "91%"
+    assert next(f for f in wet.fields if f.name == "Stage").value == "Thriving"
+
+
+def test_the_readings_panel_leaves_out_what_the_plant_has_never_had():
+    """A guarded row would state something false, not merely something dull.
+
+    A plant that has never flowered has no first flowering, a founder has no line
+    behind it, an unencumbered plant has no passenger, and an empty record is not
+    a record of zero good years.
+    """
+    plant, moisture_value = _cases()[LifeEvent.STEADY]
+    names = _names(presentation.compose_instruments(plant, moisture_value, TICK).fields)
+    for absent in ("Flowerings", "Its line", "Epiphyte", "Rings", "Scar rings"):
+        assert absent not in names, f"{absent} must not be claimed for a plant without one"
+
+
+def test_the_readings_panel_includes_what_the_plant_does_have():
+    """Each guarded row appears exactly when the plant genuinely has that thing."""
+    flowering, flowering_moisture = _cases()[LifeEvent.BLOOM]
+    assert "Flowerings" in _names(
+        presentation.compose_instruments(flowering, flowering_moisture, TICK).fields
+    )
+
+    successor, successor_moisture = _cases()[LifeEvent.REBIRTH]
+    assert "Its line" in _names(
+        presentation.compose_instruments(successor, successor_moisture, TICK).fields
+    )
+
+    host, host_moisture = _cases()[LifeEvent.EPIPHYTE]
+    assert "Epiphyte" in _names(
+        presentation.compose_instruments(host, host_moisture, TICK).fields
+    )
+
+    steady, steady_moisture = _cases()[LifeEvent.STEADY]
+    with_record = _names(
+        presentation.compose_instruments(steady, steady_moisture, TICK, _RINGS).fields
+    )
+    assert "Rings" in with_record and "Scar rings" in with_record
+
+
+def test_a_zero_reading_is_still_reported_where_it_is_true():
+    """The unguarded instruments say zero rather than disappearing.
+
+    ``Wood lost: 0 of 300`` on a healthy plant is a true and useful thing to
+    read; the guards exist for rows that would state something false, not for
+    rows that would state something unremarkable.
+    """
+    plant, moisture_value = _cases()[LifeEvent.STEADY]
+    readings = presentation.compose_instruments(plant, moisture_value, TICK)
+    assert next(f for f in readings.fields if f.name == "Wood lost").value == "0 of 300"
+
+
+def test_the_readings_panel_is_the_same_message_turned_over():
+    """Same accent, same footer, same event — one message with two faces.
+
+    A colour that jumped on the toggle would read as a second, different message
+    rather than as the other side of the one being looked at.
+    """
+    for plant, moisture_value in _cases().values():
+        ambient = presentation.compose(plant, moisture_value, TICK)
+        readings = presentation.compose_instruments(plant, moisture_value, TICK)
+        assert readings.event is ambient.event
+        assert readings.accent == ambient.accent
+        assert readings.footer == ambient.footer
+
+
+def test_the_readings_panel_steps_the_picture_back_and_stays_plain():
+    """The numbers lead, and none of them is dressed up as the plant speaking."""
+    plant, moisture_value = _cases()[LifeEvent.STEADY]
+    readings = presentation.compose_instruments(plant, moisture_value, TICK)
+    ambient = presentation.compose(plant, moisture_value, TICK)
+    assert readings.image is ImagePlacement.THUMBNAIL
+    assert readings.title == presentation.INSTRUMENT_TITLE
+    assert readings.body == presentation.INSTRUMENT_NOTE
+    assert readings.title != ambient.title and readings.body != ambient.body
+
+
+def test_the_readings_panel_is_deterministic():
+    """Same plant, same instant, same readings — like everything else here."""
+    for plant, moisture_value in _cases().values():
+        first = presentation.compose_instruments(plant, moisture_value, TICK)
+        second = presentation.compose_instruments(plant, moisture_value, TICK)
+        assert first == second
 
 
 # --- No new surface ------------------------------------------------------------
@@ -439,8 +596,11 @@ def test_composition_takes_no_configuration():
     """
     import inspect
 
-    parameters = list(inspect.signature(presentation.compose).parameters)
-    assert parameters == ["plant", "moisture_value", "seconds_per_step", "rings"]
+    expected = ["plant", "moisture_value", "seconds_per_step", "rings"]
+    assert list(inspect.signature(presentation.compose).parameters) == expected
+    # The readings panel is a second *view* of the same facts, never a second set
+    # of options: it takes exactly what the ambient panel takes, and nothing more.
+    assert list(inspect.signature(presentation.compose_instruments).parameters) == expected
 
 
 def test_the_cross_section_is_the_only_thing_rings_can_change():

@@ -1,7 +1,8 @@
 """Tests for the Discord-adapter hardening added after Phase 9.
 
-Covers channel-unreachable tracking, the germination confirmation gate and
-help pagination — all in ``bot.py``, which is otherwise untested since it is
+Covers channel-unreachable tracking, the germination confirmation gate, help
+pagination, the two faces of ``/plant`` and the accuracy of what ``/help``
+claims — all in ``bot.py``, which is otherwise untested since it is
 the thin Discord I/O layer, not pure logic. Discord objects (interactions,
 channels, messages) are faked with ``unittest.mock`` rather than constructed
 for real, since discord.py's own classes need a live gateway connection to be
@@ -13,13 +14,18 @@ matching the rest of this suite's plain-pytest style.
 """
 
 import asyncio
+import dataclasses
+import inspect
 import io
+import re
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
 import bot
 import moisture
+import presentation
 import render
 import storage
 import structure
@@ -591,11 +597,16 @@ def test_epiphyte_channel_allows_first_binding_with_administrator(monkeypatch) -
 
 
 def test_help_pages_count_and_titles() -> None:
-    """The reported four pages exist, in the reported order."""
+    """The reported five pages exist, in the reported order.
+
+    The order is the argument: what Epiphyte *is*, then what it reads, then the
+    three commands, then what arrives on its own, then what is permanent.
+    """
     pages = bot.build_help_pages()
-    assert len(pages) == 4
+    assert len(pages) == 5
     assert [page.title for page in pages] == [
         "🌱 Epiphyte",
+        "What It Reads",
         "Commands",
         "On Its Own Time",
         "Persistence & Permanence",
@@ -908,3 +919,330 @@ def test_prune_watering_windows_sweeps_reaction_windows_too() -> None:
         "reactor a guild has ever seen stays in memory for the bot's entire "
         "uptime"
     )
+
+
+# --- 8: the ambient message shows the plant and nothing else -----------------
+#
+# The living channel message is the one surface nobody opted into: it is
+# rebuilt every heartbeat and sits in a channel people are using for something
+# else. The tests below hold it to carrying a full-size picture and the plant's
+# own words, on every life event without exception -- checked here rather than
+# only in test_presentation.py because it is the poured Discord embed, not the
+# Panel, that a server actually sees.
+
+
+def _grown(nodes: int, dead: int = 0) -> structure.Structure:
+    """A structure with ``nodes`` nodes, the first ``dead`` of them dead wood.
+
+    Fabricated rather than grown, mirroring ``tests/test_presentation.py``'s
+    helper: every field the frame reads is set directly, so a 300-node plant in
+    a drought costs a comprehension instead of weeks of simulated ticks.
+    """
+    base = structure.germinate(seed=12345)
+    body = tuple(
+        dataclasses.replace(
+            base.nodes[0],
+            id=index,
+            parent_id=index - 1 if index else None,
+            state=structure.NodeState.DEAD if index < dead else base.nodes[0].state,
+        )
+        for index in range(nodes)
+    )
+    return dataclasses.replace(
+        base,
+        nodes=body,
+        step_count=900,
+        active_tips=tuple(n.id for n in body if n.state is structure.NodeState.TIP),
+    )
+
+
+def _germinated(seed: int = 1, generation: int = 1) -> structure.Structure:
+    """A just-germinated plant, optionally a successor rather than a founder."""
+    return structure.germinate(seed=seed, generation=generation)
+
+
+def test_the_ambient_embed_has_a_full_size_image_and_no_fields_on_every_event() -> None:
+    """Every life event, as the poured embed rather than as the Panel.
+
+    ``presentation`` decides this and is tested on it, but the pour is where a
+    stray ``add_field`` or a thumbnail would actually reach a server, so the
+    property is asserted again on the far side of it.
+    """
+    cases = {
+        "germination": (_germinated(), 0.0),
+        "rebirth": (_germinated(generation=4), 0.0),
+        "dieback": (_grown(300, dead=60), 0.03),
+        "drought": (_grown(300), 0.12),
+        "thirst": (_grown(300), 0.30),
+        "steady": (_grown(300), 0.50),
+        "flourishing": (_grown(300), 0.90),
+        "death": (_grown(300, dead=300), 0.0),
+    }
+    for name, (plant, moisture_value) in cases.items():
+        embed = bot.build_plant_embed(moisture_value, plant)
+        assert embed.fields == [], f"{name} carries instruments on the living message"
+        assert embed.image.url == f"attachment://{bot.PLANT_IMAGE_FILENAME}", name
+        assert embed.thumbnail.url is None, f"{name} shows the plant as a thumbnail"
+        assert embed.description, f"{name} lost the plant's own words"
+        # The accent system is untouched by the stripping: still state-derived.
+        panel = presentation.compose(plant, moisture_value, bot.TICK_INTERVAL_SECONDS)
+        assert embed.color == discord.Color(panel.accent), name
+
+
+def test_the_cross_section_embed_keeps_its_row() -> None:
+    """The single argued-for exception, on the far side of the pour too."""
+    rings = (
+        structure.Ring(year=2026, vitality=0.62, scarred=False),
+        structure.Ring(year=2027, vitality=0.09, scarred=True),
+    )
+    embed = bot.build_plant_embed(0.12, _grown(300), rings)
+    assert [field.name for field in embed.fields] == ["Rings", "Scar rings", "Moisture"]
+    assert embed.image.url == f"attachment://{bot.PLANT_IMAGE_FILENAME}"
+
+
+# --- 9: /plant's two faces ---------------------------------------------------
+
+
+def _plant_view(monkeypatch, moisture_value: float = 0.5) -> bot.PlantSnapshotView:
+    """Run ``/plant`` against a stubbed client and return the view it attached."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = storage.GuildState(
+        guild_id=guild_id,
+        structure=_grown(300),
+        moisture=moisture_value,
+        # Stamped now, so the display decay /plant applies is negligible and the
+        # readings under test are the moisture that was actually passed in.
+        last_update=time.time(),
+        channel_id=100,
+        message_id=500,
+        channel_unreachable_since=None,
+    )
+    monkeypatch.setattr(bot, "client", client)
+    monkeypatch.setattr(render, "render", lambda *args, **kwargs: io.BytesIO(b"fake-png"))
+
+    interaction = _make_interaction(guild_id=guild_id)
+    asyncio.run(bot.plant.callback(interaction))  # pyright: ignore[reportCallIssue]
+    return interaction.response.send_message.call_args.kwargs["view"]
+
+
+def test_plant_opens_on_the_same_face_the_living_message_wears(monkeypatch) -> None:
+    """The default view is the ambient one: full picture, no instruments."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    client._states[guild_id] = _make_state(guild_id=guild_id, message_id=500)
+    monkeypatch.setattr(bot, "client", client)
+    monkeypatch.setattr(render, "render", lambda *args, **kwargs: io.BytesIO(b"fake-png"))
+
+    interaction = _make_interaction(guild_id=guild_id)
+    asyncio.run(bot.plant.callback(interaction))  # pyright: ignore[reportCallIssue]
+
+    kwargs = interaction.response.send_message.call_args.kwargs
+    embed = kwargs["embed"]
+    assert kwargs["ephemeral"] is True
+    assert isinstance(kwargs["view"], bot.PlantSnapshotView)
+    assert embed.fields == []
+    assert embed.image.url == f"attachment://{bot.PLANT_IMAGE_FILENAME}"
+
+
+def test_the_button_turns_the_reply_over_and_back(monkeypatch) -> None:
+    """One toggle, two faces, and a label that always names what is *not* shown."""
+    view = _plant_view(monkeypatch)
+    assert view.toggle.label == bot.READINGS_LABEL
+
+    interaction = _make_interaction()
+    asyncio.run(view.toggle.callback(interaction))
+    readings = interaction.response.edit_message.call_args.kwargs["embed"]
+    assert view.toggle.label == bot.PLANT_LABEL
+    assert [field.name for field in readings.fields][:4] == ["Moisture", "Stage", "Age", "Crown"]
+    assert readings.thumbnail.url == f"attachment://{bot.PLANT_IMAGE_FILENAME}"
+    assert readings.image.url is None
+
+    back = _make_interaction()
+    asyncio.run(view.toggle.callback(back))
+    plant_face = back.response.edit_message.call_args.kwargs["embed"]
+    assert view.toggle.label == bot.READINGS_LABEL
+    assert plant_face.fields == []
+    assert plant_face.image.url == f"attachment://{bot.PLANT_IMAGE_FILENAME}"
+
+
+def test_the_readings_describe_the_same_instant_as_the_picture(monkeypatch) -> None:
+    """Both faces are composed once, from one reading of the state.
+
+    A readings panel recomputed on the button press would quietly disagree with
+    the already-rendered picture beside it — the moisture decays continuously,
+    so any later reading is a different moment.
+    """
+    view = _plant_view(monkeypatch, moisture_value=0.9)
+    interaction = _make_interaction()
+    asyncio.run(view.toggle.callback(interaction))
+    readings = interaction.response.edit_message.call_args.kwargs["embed"]
+    shown = next(field.value for field in readings.fields if field.name == "Moisture")
+    assert shown == "90%"
+
+    # Turning it back and forth must not move the number: it is a snapshot of one
+    # instant, not a gauge that keeps reading while somebody stares at it.
+    asyncio.run(view.toggle.callback(_make_interaction()))  # back to the plant
+    again = _make_interaction()
+    asyncio.run(view.toggle.callback(again))  # and over to the readings again
+    repeat = again.response.edit_message.call_args.kwargs["embed"]
+    assert next(f.value for f in repeat.fields if f.name == "Moisture") == shown
+
+
+def test_two_invocations_do_not_share_button_state(monkeypatch) -> None:
+    """Each /plant gets its own view bound to its own ephemeral reply.
+
+    Nothing about the toggle is stored per guild or per person, so one person
+    running the command twice — or two people running it seconds apart — cannot
+    move each other's message or leak a half-turned state between them.
+    """
+    first = _plant_view(monkeypatch)
+    second = _plant_view(monkeypatch)
+    assert first is not second
+
+    asyncio.run(first.toggle.callback(_make_interaction()))
+    assert first.toggle.label == bot.PLANT_LABEL
+    assert second.toggle.label == bot.READINGS_LABEL
+    assert first.embed is not second.embed
+
+
+def test_the_button_greys_itself_out_on_timeout() -> None:
+    """An expired view disables its button in place rather than erroring later."""
+    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed())
+    view.message = MagicMock()
+    view.message.edit = AsyncMock()
+
+    asyncio.run(view.on_timeout())
+
+    assert view.toggle.disabled is True
+    view.message.edit.assert_awaited_once()
+    assert view.message.edit.call_args.kwargs["view"] is view
+
+
+def test_a_timed_out_view_survives_a_deleted_message() -> None:
+    """A reply that is already gone must not raise out of the timeout handler."""
+    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed())
+    view.message = MagicMock()
+    view.message.edit = AsyncMock(side_effect=_http_exception())
+
+    asyncio.run(view.on_timeout())  # must not raise
+
+    assert view.toggle.disabled is True
+
+
+def test_the_living_message_never_gets_a_view() -> None:
+    """Buttons exist on /plant's ephemeral reply and nowhere else.
+
+    The automatic channel message is the plant, full stop: no toggle, no
+    instruments, nothing for anyone to press.
+    """
+    source = inspect.getsource(bot.EpiphyteClient.refresh_channel_message)
+    source += inspect.getsource(bot.EpiphyteClient.reanchor_channel_message)
+    assert "view=" not in source
+    assert "build_instrument_embed" not in source
+
+
+# --- 10: /help says only true things ----------------------------------------
+
+
+def _help_text() -> str:
+    """Every word of every /help page, as one string."""
+    return "\n".join(page.description or "" for page in bot.build_help_pages())
+
+
+def test_help_mentions_exactly_the_commands_that_exist() -> None:
+    """No drift in either direction: nothing invented, nothing quietly omitted."""
+    real = {command.name for command in bot.client.tree.get_commands()}
+    mentioned = set(re.findall(r"`/([a-z-]+)", _help_text()))
+    assert mentioned == real, f"help mentions {mentioned}, the tree has {real}"
+
+
+def test_help_only_names_arguments_the_commands_actually_take() -> None:
+    """``/epiphyte-channel <channel>`` has to match the real parameter name."""
+    parameters = {
+        command.name: {parameter.name for parameter in getattr(command, "parameters", [])}
+        for command in bot.client.tree.get_commands()
+    }
+    for name, arguments in re.findall(r"`/([a-z-]+)([^`]*)`", _help_text()):
+        for argument in re.findall(r"<([a-z_]+)>", arguments):
+            assert argument in parameters[name], f"/{name} has no argument <{argument}>"
+
+
+def test_help_cites_the_real_tick_interval_and_decay() -> None:
+    """The stated durations are computed from the constants, not written down.
+
+    Every number on these pages is derived at build time, so a recalibration of
+    the growth interval or the decay half-life cannot leave the explanation
+    quietly describing a bot that no longer exists.
+    """
+    text = _help_text()
+    hours = bot.TICK_INTERVAL_SECONDS // 3600
+    assert ("once an hour" if hours == 1 else f"once every {hours} hours") in text
+    days = round(3 * moisture.DEFAULT_HALF_LIFE_SECONDS / (24 * 60 * 60))
+    assert f"about {days} days of real quiet" in text
+
+
+def test_help_describes_the_real_anti_farming_curve() -> None:
+    """The window and the falloff are the ones ``moisture`` actually applies.
+
+    Both are load-bearing claims — they are the whole reason the plant cannot be
+    farmed — so neither may be an adjective standing in for a constant.
+    """
+    text = _help_text()
+    assert "within a day" in text
+    assert moisture.WATERING_WINDOW_SECONDS == 24 * 60 * 60, (
+        "the watering window changed; /help still calls it a day"
+    )
+    assert "worth half of the one before it" in text
+    assert moisture.WATERING_FALLOFF == 0.5, (
+        "the falloff changed; /help still calls each further message half the last"
+    )
+    # And the claim itself, not just the constant behind it.
+    assert moisture.effective_water_amount(1) == moisture.effective_water_amount(0) / 2
+
+
+def test_help_states_how_long_the_wind_actually_lingers() -> None:
+    """The one duration on the page that is seconds rather than days."""
+    assert structure.WIND_LINGER_SECONDS == 90, (
+        "the wind linger changed; /help still calls it a minute and a half"
+    )
+    assert "for a minute and a half after the last keystroke" in _help_text()
+    assert structure.wind_is_stirring(seconds_since_typing=89) is True
+    assert structure.wind_is_stirring(seconds_since_typing=91) is False
+
+
+def test_help_describes_death_as_the_end_of_a_long_drought_not_a_deeper_one() -> None:
+    """Death is every node dead, which a drought reaches by lasting, not by deepening."""
+    assert "goes on long enough takes all of it" in _help_text()
+    plant = _grown(50)
+    assert structure.is_dead(plant) is False
+    assert structure.is_dead(_grown(50, dead=50)) is True
+
+
+def test_help_promises_only_readings_the_plant_actually_shows() -> None:
+    """The instruments /help names on the button are the ones behind it."""
+    text = _help_text()
+    readings = presentation.compose_instruments(_grown(300), 0.9, bot.TICK_INTERVAL_SECONDS)
+    values = {field.name.lower(): field.value.lower() for field in readings.fields}
+    for promised in ("moisture", "stage", "age"):
+        assert promised in text and promised in values
+    assert "growing tips" in text and "growing tips" in values["crown"]
+
+
+def test_help_claims_the_permission_gate_that_exists() -> None:
+    """/help says /epiphyte-channel needs Manage Channels; it must be true."""
+    assert "Manage Channels" in _help_text()
+
+    denied = _make_interaction(permissions=discord.Permissions(send_messages=True))
+    assert asyncio.run(bot.require_manage_channels(denied)) is False
+
+    allowed = _make_interaction(permissions=discord.Permissions(manage_channels=True))
+    assert asyncio.run(bot.require_manage_channels(allowed)) is True
+
+
+def test_help_does_not_claim_a_reset_or_a_leaderboard() -> None:
+    """Both are load-bearing promises on the persistence page, and both hold."""
+    text = _help_text()
+    assert "no delete command and no reset command" in text
+    assert "no leaderboard" in text
+    assert {c.name for c in bot.client.tree.get_commands()} == {"plant", "epiphyte-channel", "help"}

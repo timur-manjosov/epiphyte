@@ -177,6 +177,12 @@ HELP_EMBED_COLOR = presentation.PLAIN_ACCENT
 #: Project repository, credited once in /help.
 REPO_URL = "https://github.com/timur-manjosov/epiphyte"
 
+#: How long ``/plant``'s readings toggle stays live before greying itself out.
+#: The same window ``/help``'s pagination uses, and for the same reason: long
+#: enough to read the panel and turn it back over, far short of the fifteen
+#: minutes after which Discord stops accepting edits to the response at all.
+PLANT_VIEW_TIMEOUT_SECONDS = 180
+
 #: How often the bot's presence rotates to its next in-fiction status line.
 PRESENCE_ROTATE_MINUTES = 10
 
@@ -246,29 +252,20 @@ def _audible_channel_id(state: discord.VoiceState, afk_channel_id: int | None) -
     return channel.id if audible else None
 
 
-def build_plant_embed(
-    moisture_value: float,
-    plant: structure.Structure,
-    rings: tuple[structure.Ring, ...] = (),
-) -> discord.Embed:
-    """Build the embed framing the plant image, its words and its instruments.
+def _pour(panel: presentation.Panel) -> discord.Embed:
+    """Turn a composed :class:`presentation.Panel` into the Discord object it describes.
 
-    Every decision worth making here — the accent colour, which instruments are
-    shown, whether the picture leads or accompanies the text, the footer — is made
-    in :mod:`presentation` as a pure function of the plant's state, so it is
-    testable without Discord. This function is only the pour: it turns that
-    :class:`presentation.Panel` into the Discord object it was designed for and
-    knows nothing else.
-
-    ``rings`` is non-empty only during the once-a-year window in which the
-    attached image is the plant's cross-section rather than the plant (see
-    :meth:`EpiphyteClient._cross_section`); the frame that goes around it is
-    :mod:`presentation`'s decision as usual, not this function's.
+    The only function in this module that knows what an embed is. Every decision
+    worth making — the accent colour, which instruments appear, whether the picture
+    leads or accompanies, the footer — was already made in :mod:`presentation` as a
+    pure function of the plant's state, so it is testable without Discord; this is
+    the pour and nothing else. Shared by both panels, which is what guarantees the
+    two faces of ``/plant`` differ only in what :mod:`presentation` decided they
+    differ in.
     """
-    panel = presentation.compose(plant, moisture_value, TICK_INTERVAL_SECONDS, rings)
     embed = discord.Embed(title=panel.title, description=panel.body, color=panel.accent)
     for field in panel.fields:
-        embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        embed.add_field(name=field.name, value=field.value, inline=True)
     if panel.image is presentation.ImagePlacement.THUMBNAIL:
         embed.set_thumbnail(url=f"attachment://{PLANT_IMAGE_FILENAME}")
     else:
@@ -277,28 +274,123 @@ def build_plant_embed(
     return embed
 
 
+def build_plant_embed(
+    moisture_value: float,
+    plant: structure.Structure,
+    rings: tuple[structure.Ring, ...] = (),
+) -> discord.Embed:
+    """Build the ambient embed: the full-size plant, and what it has to say.
+
+    This is what the living channel message wears on every heartbeat, and what
+    ``/plant`` opens on. It carries no instrument row — see
+    :func:`presentation.compose` for why, and for the single exception (the
+    once-a-year cross-section) that keeps one.
+
+    ``rings`` is non-empty only during that window, in which the attached image is
+    the plant's cross-section rather than the plant (see
+    :meth:`EpiphyteClient._cross_section`); the frame that goes around it is
+    :mod:`presentation`'s decision as usual, not this function's.
+    """
+    return _pour(presentation.compose(plant, moisture_value, TICK_INTERVAL_SECONDS, rings))
+
+
+def build_instrument_embed(
+    moisture_value: float,
+    plant: structure.Structure,
+    rings: tuple[structure.Ring, ...] = (),
+) -> discord.Embed:
+    """Build the readings embed: the same plant, measured rather than listened to.
+
+    Only ever reached from the button on ``/plant``'s ephemeral response — the
+    living channel message has no path to this function at all, by design. Takes
+    the same arguments as :func:`build_plant_embed` and is meant to be called
+    beside it, from one reading of the state, so the readings describe the same
+    instant as the picture they are attached to.
+    """
+    return _pour(
+        presentation.compose_instruments(plant, moisture_value, TICK_INTERVAL_SECONDS, rings)
+    )
+
+
 def build_help_pages() -> list[discord.Embed]:
     """Build the /help embeds, one per page, in display order.
 
-    The cited durations are computed from :mod:`moisture`'s own constants rather
-    than restated as free-standing numbers, so a future recalibration keeps this
-    text honest without a separate edit. Split across pages instead of one long
-    embed so each page stays a short read; :class:`HelpView` pages through them.
+    Written as a short essay about the project rather than as a manual for it: the
+    thesis first, then what the plant is actually reading, then the three commands,
+    then the things that arrive on their own, then what is permanent. That order is
+    the point — someone who stops after page one should have understood what
+    Epiphyte *is*, and someone who reads to the end should know everything it does.
+
+    The register is deliberately not the plant's. The persona bible puts ``/help``
+    on the plain side of its spoken/plain line, and it stays there: a reference
+    page has to be legible under a moderator's thumb, and a diary voice would bury
+    the one sentence they came here for. "Crafted" here means the narrator is
+    warm and specific, never that the plant is talking.
+
+    Everything asserted below is checked against reality by
+    ``tests/test_bot.py``'s help-accuracy tests: the commands and their arguments
+    against the live command tree, the permission gate against the function that
+    enforces it, and the promised readings against a real readings panel. The cited
+    durations are computed from :mod:`moisture`'s own constants rather than restated
+    as free-standing numbers, so a future recalibration keeps this text honest
+    without a separate edit. The two places where prose beat derivation — "a day"
+    and "half of the one before it", which no formatter turns into readable
+    English — are literals whose constants are asserted directly, so a
+    recalibration fails a test instead of quietly lying. :class:`HelpView` pages
+    through the result.
     """
     tick_hours = TICK_INTERVAL_SECONDS // 3600
-    hour_word = "hour" if tick_hours == 1 else "hours"
+    tick_phrase = "once an hour" if tick_hours == 1 else f"once every {tick_hours} hours"
     wither_days = round(3 * moisture.DEFAULT_HALF_LIFE_SECONDS / (24 * 60 * 60))
+    window_hours = round(moisture.WATERING_WINDOW_SECONDS / 3600)
+    window_phrase = "a day" if window_hours == 24 else f"{window_hours} hours"
+    wind_seconds = round(structure.WIND_LINGER_SECONDS)
+    wind_phrase = "a minute and a half" if wind_seconds == 90 else f"{wind_seconds} seconds"
 
     overview = discord.Embed(
         title="🌱 Epiphyte",
         description=(
-            "A single plant lives in this server, shaped by its whole history rather "
-            "than any one moment. Every message sent anywhere in the server waters it "
-            f"a little; it grows on its own about once every {tick_hours} {hour_word}, "
-            f"and roughly {wither_days} days of real silence dry it from thriving back "
-            "down to withered. Neglect that lasts long enough leaves permanent scars "
-            "and can kill it outright — but a mutated successor always regrows in its "
-            "place. Nothing here can be farmed, and there is no leaderboard."
+            "One server. One plant. One measure of how alive the place is, "
+            "accumulating for as long as the server lasts.\n\n"
+            "Every message sent anywhere here waters it. Silence dries it out — "
+            f"about {wither_days} days of real quiet takes it from thriving down to "
+            f"withered. It grows on its own roughly {tick_phrase}, but only while it "
+            "has the moisture to afford the step, so a large plant is the record of "
+            "weeks of genuine life rather than of one loud evening.\n\n"
+            "What has grown, stays grown. The plant is not a readout of this "
+            "afternoon; it is the shape its whole history has left behind, and no "
+            "two servers end up with the same one.\n\n"
+            "None of it is a score. There is no leaderboard, nothing to configure, "
+            "and nothing that rewards trying to work at it. The plant is simply "
+            "honest, which is occasionally uncomfortable and entirely the point."
+        ),
+        color=HELP_EMBED_COLOR,
+    )
+
+    signals = discord.Embed(
+        title="What It Reads",
+        description=(
+            "The plant is not a moisture gauge with leaves on it. Six readings of "
+            "this server's life shape six different parts of its body, and not one "
+            "of them can be manufactured by a single person working at it alone.\n\n"
+            "**Messages** water it, with steeply diminishing returns per person: "
+            f"within {window_phrase}, each further message from the same person is "
+            "worth half of the one before it. Ten people saying one thing each is "
+            "worth far more than one person saying ten.\n"
+            "**How many different people** speak decides how broadly the crown "
+            "branches. A room with one voice in it grows narrow.\n"
+            "**How evenly** activity falls across the weeks decides how symmetrical "
+            "it grows. Bursts make knotted wood; steadiness makes calm wood.\n"
+            "**Reactions** decide how richly it flowers — counted per person, and "
+            "never counted at all for reacting to yourself.\n"
+            "**Threads** that genuinely hold several people for a while decide how "
+            "deep the branching runs before it stops.\n"
+            "**Shared voice time** — two or more people audible in a channel "
+            "together — feeds the roots and thickens the base of the trunk. Sitting "
+            "alone in a voice channel is worth exactly nothing.\n\n"
+            "Epiphyte never reads what anybody writes. It cannot: it runs without "
+            "the permissions that would let it, and only ever learns that a message "
+            "happened."
         ),
         color=HELP_EMBED_COLOR,
     )
@@ -306,11 +398,23 @@ def build_help_pages() -> list[discord.Embed]:
     commands_page = discord.Embed(
         title="Commands",
         description=(
-            "`/epiphyte-channel <channel>` — bind or move the plant to a channel "
-            "(on a server's first use, this asks for confirmation before it "
-            "germinates anything)\n\n"
-            "`/plant` — a private, on-the-spot look at your plant right now\n\n"
-            "`/help` — this explanation"
+            "Three, and there will not be more. Everything else the plant does, it "
+            "does by living.\n\n"
+            "**`/epiphyte-channel <channel>`**\n"
+            "Chooses the channel the plant is displayed in, and moves it there if it "
+            "already lives somewhere else. Needs **Manage Channels** — a plant is a "
+            "permanent, server-wide fixture, not something any member should be able "
+            "to relocate. A server's first use asks for confirmation before anything "
+            "germinates.\n\n"
+            "**`/plant`**\n"
+            "A private look at the plant as it stands this second, visible only to "
+            "you. A button on that reply turns it over and shows every reading "
+            "behind the picture — moisture, stage, age, growing tips, and whatever "
+            "else this particular plant currently has to measure. Running it also "
+            "nudges the living message back to the bottom of its channel if the "
+            "conversation has buried it.\n\n"
+            "**`/help`**\n"
+            "This."
         ),
         color=HELP_EMBED_COLOR,
     )
@@ -318,14 +422,27 @@ def build_help_pages() -> list[discord.Embed]:
     on_its_own_time = discord.Embed(
         title="On Its Own Time",
         description=(
-            "Growth, blooming, seeding and the rare secondary epiphyte all happen by "
-            "themselves as the plant lives — none of it can be triggered on demand. "
-            "Check back after some real activity, not right after a test message.\n\n"
-            "Once a real year has gone by, the plant spends one day showing a "
-            "cross-section of its trunk instead of itself: one ring per finished "
-            "year, wide and dark where the server was alive, thin and pale where it "
-            "was quiet, grey where a drought cost it wood for good. It comes around "
-            "by itself, like everything else here."
+            "Some of what the plant does cannot be asked for — only earned, and then "
+            "waited out.\n\n"
+            "It flowers once it has banked enough sustained health to afford it, sets "
+            "seed if that flowering lasts, and — rarely, and only on an old and large "
+            "body — comes to carry a second small plant riding on one of its limbs. "
+            "That last one is what the project is named after.\n\n"
+            "A deep enough drought kills wood outright. That wood is never cleared "
+            "away and never comes back, so a plant that has been through a bad month "
+            "goes on saying so for the rest of its life. A drought that goes on long "
+            "enough takes all of it, and a successor germinates in its place carrying "
+            "a mutated version of the same genome — recognisably related, and not the "
+            "same individual.\n\n"
+            "Once a calendar year has finished, the plant spends a single day showing "
+            "a cross-section of its trunk instead of itself: one ring per completed "
+            "year, read from the middle outward. Wide and dark where the server was "
+            "alive, thin and pale where it was quiet, grey where a drought cost it "
+            "wood. It comes around by itself, like everything else here.\n\n"
+            "And when somebody is typing right now, the air moves a little — for "
+            f"{wind_phrase} after the last keystroke, and then it stands still again. "
+            "That one means nothing at all: it is weather rather than a measurement, "
+            "stored nowhere and gone on the next restart."
         ),
         color=HELP_EMBED_COLOR,
     )
@@ -333,16 +450,21 @@ def build_help_pages() -> list[discord.Embed]:
     persistence = discord.Embed(
         title="Persistence & Permanence",
         description=(
-            "Each server's plant is permanent for as long as the server has one: "
-            "kicking the bot and re-inviting it later does **not** reset anything. "
-            "State lives independently of the bot's membership, so the plant just "
-            "picks up where it left off. There is deliberately no delete or reset "
-            "command — that would make removing and re-adding the bot a loophole."
+            "A server's plant lasts as long as the server does. Removing the bot and "
+            "inviting it back later resets **nothing**: the state does not live in "
+            "the bot's membership, so the plant picks up exactly where it left off — "
+            "several days drier, and otherwise unchanged.\n\n"
+            "There is deliberately no delete command and no reset command. Adding one "
+            "would turn kicking and re-adding the bot into a way to erase a bad "
+            "month, and a record you can erase is not a record.\n\n"
+            "Every server's plant is its own, grown from its own history alone. "
+            "Nothing here is shared between servers, ranked against them, or "
+            "compared to them."
         ),
         color=HELP_EMBED_COLOR,
     )
 
-    pages = [overview, commands_page, on_its_own_time, persistence]
+    pages = [overview, signals, commands_page, on_its_own_time, persistence]
     for index, page in enumerate(pages, start=1):
         page.set_footer(text=f"Page {index}/{len(pages)} · Open source, MIT licensed · {REPO_URL}")
     return pages
@@ -400,6 +522,71 @@ class HelpView(discord.ui.View):
         self._index += 1
         self._update_buttons()
         await interaction.response.edit_message(embed=self._pages[self._index], view=self)
+
+
+#: Button label while the plant is on show — what pressing it will reveal.
+READINGS_LABEL = "Readings"
+#: Button label while the readings are on show — what pressing it will bring back.
+PLANT_LABEL = "The plant"
+
+
+class PlantSnapshotView(discord.ui.View):
+    """The one button in the project: turn ``/plant``'s reply over and back.
+
+    Both faces are composed once, up front, from a single reading of the guild's
+    state, and this view only chooses which of the two is currently displayed.
+    That is deliberate on two counts. The readings can never disagree with the
+    picture beside them, because both describe the same instant rather than the
+    instant each was last asked for. And the toggle stays honest about what it is:
+    a way of looking at one snapshot, not a live gauge that keeps ticking while
+    somebody stares at it — for that, the plant is in its channel, growing.
+
+    Nothing here is stored anywhere. Each ``/plant`` gets its own view object
+    bound to its own ephemeral reply, so two people running the command seconds
+    apart — or one person running it twice — share no state at all: neither
+    invocation can move the other's message, and neither leaves anything behind
+    once it times out. This is why a toggle does not count as configuration under
+    the surface-minimalism rule: it changes nothing for the next viewer, nothing
+    for the living channel message, and nothing for the next invocation.
+    """
+
+    def __init__(self, plant_embed: discord.Embed, readings_embed: discord.Embed) -> None:
+        super().__init__(timeout=PLANT_VIEW_TIMEOUT_SECONDS)
+        self._faces = (plant_embed, readings_embed)
+        self._showing_readings = False
+        self.message: discord.Message | None = None
+        self._update_button()
+
+    @property
+    def embed(self) -> discord.Embed:
+        """Whichever face is currently on show."""
+        return self._faces[1 if self._showing_readings else 0]
+
+    def _update_button(self) -> None:
+        """Label the button with what it will show, never with what is already shown."""
+        self.toggle.label = PLANT_LABEL if self._showing_readings else READINGS_LABEL
+
+    async def on_timeout(self) -> None:
+        """Grey the button out on the original reply instead of leaving it dead-but-clickable."""
+        self.toggle.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label=READINGS_LABEL, style=discord.ButtonStyle.secondary)
+    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Swap the two faces in place.
+
+        Edits only the embed: the rendered PNG is already attached and both faces
+        reference it by the same ``attachment://`` name, so turning the message
+        over costs no render and no upload — one of them just puts it in the
+        thumbnail slot instead of the image slot.
+        """
+        self._showing_readings = not self._showing_readings
+        self._update_button()
+        await interaction.response.edit_message(embed=self.embed, view=self)
 
 
 class EpiphyteClient(discord.Client):
@@ -1726,7 +1913,12 @@ async def plant(interaction: discord.Interaction) -> None:
 
     Growth is the metabolic tick's job now, so this never grows the plant. It
     renders the current state (moisture decayed to this moment, for display) as an
-    ephemeral snapshot for the caller, and if the living channel message has
+    ephemeral snapshot for the caller, opening on the same face the living channel
+    message wears — the full-size plant and its own words — with a button that
+    turns it over to every reading behind it (see :class:`PlantSnapshotView`).
+    This is the only surface in the project where those readings appear at all:
+    the living message is the plant, and somebody who wants the numbers has to
+    ask. If the living channel message has
     scrolled out of view it quietly moves it back to the bottom. If the living
     message currently cannot be delivered — the bound channel is gone, or it's
     there but the bot can't post in it — this is also the one place that says
@@ -1761,17 +1953,24 @@ async def plant(interaction: discord.Interaction) -> None:
         client._wind(guild_id, now),
     )
     buffer = io.BytesIO(png)
-    embed = build_plant_embed(display_moisture, state.structure, rings)
+    # Both faces from this one reading of the state, so the readings behind the
+    # button describe exactly the moment the attached picture was rendered for.
+    view = PlantSnapshotView(
+        build_plant_embed(display_moisture, state.structure, rings),
+        build_instrument_embed(display_moisture, state.structure, rings),
+    )
     content = None
     if state.channel_unreachable_since is not None:
         content = await client._channel_trouble_message(state.channel_id)
     try:
         await interaction.response.send_message(
             content=content,
-            embed=embed,
+            embed=view.embed,
             file=discord.File(buffer, filename=PLANT_IMAGE_FILENAME),
+            view=view,
             ephemeral=True,
         )
+        view.message = await interaction.original_response()
     except (discord.Forbidden, discord.HTTPException):
         _log.exception("Failed to send the /plant snapshot for guild %s.", guild_id)
         return

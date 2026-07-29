@@ -7,28 +7,43 @@ the same one :mod:`voice` already makes: the interesting decision is testable
 without Discord, and ``bot.py`` keeps only the four lines that know what an embed
 is.
 
-Three ideas carry the module, and they mirror the ones the plant itself is built
-on:
+The module composes **two** panels, and the split between them is the design:
 
-**The frame is derived, never configured.** Accent colour, field structure and
-image placement are all read out of the plant's current state — the same state
-:mod:`voice` reads. There is no theme, no setting and no command that changes any
-of it, exactly as there is none that changes the plant's own appearance. What the
-frame looks like is one more honest readout, not a preference.
+:func:`compose` builds the *ambient* panel — the one the living channel message
+wears, rebuilt every heartbeat, seen by everyone in the server whether they asked
+or not. It is the plant's face and nothing else: a full-size picture, the plant's
+own words, an accent colour read from its condition, and the quiet footer. It
+carries no instruments at all. Nobody scrolling past a channel asked to read a
+gauge, and a number beside the picture is the one thing guaranteed to be looked at
+instead of it.
+
+:func:`compose_instruments` builds the *readings* panel, which exists only behind
+a button on ``/plant`` — asked for, per invocation, by one person, and seen by
+nobody else. Every instrument the module has ever built lives there, all of them
+at once, in the plain register the persona bible reserves for readouts.
+
+Three ideas carry both, and they mirror the ones the plant itself is built on:
+
+**The frame is derived, never configured.** Accent colour, which instruments
+apply and image placement are all read out of the plant's current state — the same
+state :mod:`voice` reads. There is no theme, no setting and no command that
+changes any of it, exactly as there is none that changes the plant's own
+appearance. Which of the two panels you are looking at is a momentary choice, not
+a stored preference: it changes nothing for the next viewer, and the ambient
+message has no toggle at all.
 
 **One life event, one shape.** :func:`life_event` collapses the plant's condition
-into a single :class:`LifeEvent`, and every event gets its *own* field structure —
-not one template with different values dropped in. A germinating plant is a small
-thumbnail and a sentence; a dead one is a full-width image and nothing else; a
-plant in drought shows one instrument where a thriving one shows four. The
-ordering in :func:`life_event` is the whole design decision: endings and
-beginnings outrank what is happening to the body, which outranks what the body has
-become, which outranks the ordinary day.
+into a single :class:`LifeEvent`, which decides the ambient panel's colour and its
+words, and decides in :func:`_fields` which instruments an event is *about* — the
+per-event rows that the readings panel is assembled out of. The ordering in
+:func:`life_event` is the whole design decision: endings and beginnings outrank
+what is happening to the body, which outranks what the body has become, which
+outranks the ordinary day.
 
 **A quiet constant underneath.** The footer is the one element whose shape never
-changes: a seed-derived sigil, the generation, the age in days, and whichever
-permanent marks the plant carries. It is the only place lineage and age appear on
-most events, which is what lets the field rows differ so freely above it.
+changes, and it is on both panels: a seed-derived sigil, the generation, the age
+in days, and whichever permanent marks the plant carries. Lineage and age live
+down there, which is exactly what lets the ambient panel above it carry nothing.
 
 The boundary this module must not cross: it frames the rendered image, it never
 touches it. Everything inside the PNG — the body, the palette, the foliage,
@@ -78,37 +93,48 @@ class LifeEvent(Enum):
 class ImagePlacement(Enum):
     """Where the already-rendered plant image sits in the frame.
 
-    Purely a slot in the message — the PNG itself is identical either way. It is
-    the strongest lever the frame has for making a major life event feel unlike an
-    ordinary day, and it costs nothing but a different attachment reference.
+    Purely a slot in the message — the PNG itself is identical either way, which
+    is what lets the two panels swap it between slots on a button press without
+    re-rendering or re-uploading anything.
+
+    The two values now line up exactly with the two panels rather than with life
+    events: the ambient panel is *always* :data:`FULL`, on every event without
+    exception, because that panel exists to show the plant; the readings panel is
+    always :data:`THUMBNAIL`, because there the numbers lead and the plant is what
+    they are about.
     """
 
     #: Full width, below the text: the picture leads.
     FULL = "full"
-    #: Small, top right: the words lead and the plant accompanies them.
+    #: Small, top right: the readings lead and the plant accompanies them.
     THUMBNAIL = "thumbnail"
 
 
 @dataclass(frozen=True)
 class Field:
-    """One plain readout beside the plant — an instrument, never part of its speech.
+    """One plain readout of the plant — an instrument, never part of its speech.
 
-    ``inline`` false makes the field span the message's whole width, which is
-    reserved for a milestone the plant has actually earned (see
-    :func:`_promoted_milestone`).
+    Only ever appears on the readings panel (:func:`compose_instruments`). Every
+    field carries a short name and a short value and is laid out inline, so a
+    readings panel reads as a compact block of gauges rather than a list of
+    paragraphs; there is deliberately no width or ordering knob on an individual
+    field, because which instruments appear at all is already decided by the
+    plant's state rather than by anyone's preference.
     """
 
     name: str
     value: str
-    inline: bool = True
 
 
 @dataclass(frozen=True)
 class Panel:
     """Everything the adapter needs to build the message, and nothing Discord-shaped.
 
-    ``title`` and ``body`` are the plant's own words, taken from :mod:`voice`
-    unchanged — this module decides where they sit, never what they say.
+    Used for both panels. On the ambient one, ``title`` and ``body`` are the
+    plant's own words, taken from :mod:`voice` unchanged, and ``fields`` is empty
+    on every event but the cross-section; on the readings one, ``title`` and
+    ``body`` are deliberately plain and ``fields`` is where everything is. Either
+    way this module decides where the words sit, never what they say.
     """
 
     event: LifeEvent
@@ -380,8 +406,16 @@ def footer(state: voice.VoiceState, plant: structure.Structure, seconds_per_step
 #
 # Each builder below owns one event's instrument row, and they are meant to be
 # read side by side: the differences are the point. Nothing here is a template
-# with substituted values — the field *names*, their count, and whether the image
-# leads or accompanies all change with what the plant is going through.
+# with substituted values — the field *names* and their count change with what the
+# plant is going through.
+#
+# These rows no longer reach the living channel message (the cross-section aside;
+# see :func:`compose`). They are now the readings panel's source of truth: it is
+# assembled by walking every event's row and taking the union, so "which
+# instruments does a flowering plant have" is still answered here, in one place,
+# rather than restated in a second list that could drift out of step. An event's
+# row remains the honest answer to *what this event is about* — the readings panel
+# simply asks all the questions at once.
 
 
 def _moisture_field(moisture_value: float) -> Field:
@@ -474,17 +508,19 @@ def _fields(
 ) -> tuple[Field, ...]:
     """Return the instrument row for one event — its own, not a shared template.
 
-    Read as a set, the rows say something the individual rows cannot: the panel
-    opens up as the plant does and closes down as it suffers. A flourishing plant
-    carries four instruments, an ordinary one three, a thirsty one two, a plant in
-    drought a single number, and a germinating or dead one none at all — at those
-    two ends there is nothing to measure that the plant has not already said
-    better itself.
+    Read as a set, the rows say something the individual rows cannot: how much
+    there is to measure opens up as the plant does and closes down as it suffers.
+    A flourishing plant carries four instruments, an ordinary one three, a thirsty
+    one two, a plant in drought a single number, and a germinating or dead one none
+    at all — at those two ends there is nothing to measure that the plant has not
+    already said better itself.
 
     The cross-section is the one event whose row is not about the present at all
     — two readings of the record, and the moisture last rather than first, so a
     drought running on the day the rings are shown is still on the panel without
-    displacing what the panel is for.
+    displacing what the panel is for. It is also the one row :func:`compose` still
+    puts on the living message; see there for why that exception survived the
+    stripping of every other row.
     """
     if event is LifeEvent.GERMINATION:
         return ()
@@ -530,67 +566,7 @@ def _fields(
     )
 
 
-def _image_placement(event: LifeEvent) -> ImagePlacement:
-    """Whether the picture leads this event, or accompanies its words.
-
-    A germinating or newly reborn plant is a thread a few pixels tall: rendered
-    full width it is mostly empty soil, so it accompanies the sentence instead of
-    dominating it. Everything else leads with the picture — death most of all,
-    where the bare grey body *is* the message and the frame gets out of its way.
-    """
-    if event in (LifeEvent.GERMINATION, LifeEvent.REBIRTH):
-        return ImagePlacement.THUMBNAIL
-    return ImagePlacement.FULL
-
-
-# --- Composition ---------------------------------------------------------------
-
-
-#: Field name a promoted milestone line is shown under, per event that promotes one.
-_PROMOTED_NAMES: dict[LifeEvent, str] = {
-    LifeEvent.BLOOM: "In flower",
-    LifeEvent.EPIPHYTE: "Habitat",
-}
-
-#: Which milestone the event is *about*, keyed by the order
-#: :func:`voice.milestone_lines` returns them in.
-_PROMOTED_KIND: dict[LifeEvent, str] = {
-    LifeEvent.BLOOM: "bloom",
-    LifeEvent.EPIPHYTE: "host",
-}
-
-
-def _milestones(state: voice.VoiceState) -> dict[str, str]:
-    """Label :func:`voice.milestone_lines`'s output by which milestone each line is.
-
-    That function returns the carried milestones in a fixed order — bloom, then
-    seed, then epiphyte — so zipping it against the same order recovers which line
-    is which without reaching into :mod:`voice`'s pools.
-    """
-    carried = [
-        kind
-        for kind, held in (("bloom", state.blooming), ("seed", state.seeded), ("host", state.hosting))
-        if held
-    ]
-    return dict(zip(carried, voice.milestone_lines(state)))
-
-
-def _promoted_milestone(event: LifeEvent, state: voice.VoiceState) -> tuple[Field | None, list[str]]:
-    """Lift the milestone this event is about out of the text, into a full-width field.
-
-    A bloom or an epiphyte is the rarest thing the plant will ever have to report,
-    and burying it as the third paragraph of a description reads as an afterthought.
-    Promoted, it spans the message's whole width — the only field that ever does —
-    while any other milestone the plant happens to be carrying stays in the text.
-    Returns ``(field or None, the lines that remain in the body)``.
-    """
-    lines = _milestones(state)
-    kind = _PROMOTED_KIND.get(event)
-    promoted = lines.pop(kind, None) if kind is not None else None
-    remaining = list(lines.values())
-    if promoted is None:
-        return None, remaining
-    return Field(_PROMOTED_NAMES[event], promoted, inline=False), remaining
+# --- Composition: the ambient panel --------------------------------------------
 
 
 def compose(
@@ -599,35 +575,54 @@ def compose(
     seconds_per_step: float,
     rings: tuple[structure.Ring, ...] = (),
 ) -> Panel:
-    """Frame a plant: its event, its colour, its words and the shape they sit in.
+    """Frame a plant for the living channel message: the picture, and what it says.
 
-    The words themselves come from :mod:`voice` untouched — this module never
-    writes what the plant says, only where it lands. ``seconds_per_step`` is the
-    adapter's tick interval, passed in rather than read from a clock or a config so
-    the whole composition stays a pure function of the plant.
+    This is the panel nobody asked for. It is rebuilt on every heartbeat and sits
+    in a channel people are using for something else, so it carries the plant and
+    nothing beside it: a full-size image on every event without exception, the
+    plant's own words from :mod:`voice` untouched, an accent read from its
+    condition, and the quiet footer. No instrument row — not moisture, not stage,
+    not age, not crown, not wood lost. Those all still exist and are all still
+    computed here (see :func:`_fields`); they live on the readings panel, which
+    somebody has to press a button to see (:func:`compose_instruments`).
+
+    Two consequences of that are worth stating, because both used to be otherwise:
+    a germinating or newly reborn plant no longer accompanies its sentence as a
+    thumbnail but leads full width like everything else — a seedling being a few
+    pixels of thread in a lot of soil is *true*, and the panel that exists to show
+    the plant should show it — and a milestone the event is about is no longer
+    lifted into a field of its own. Every milestone line the plant carries now
+    stays where it was written, in its own words in the body.
+
+    ``seconds_per_step`` is the adapter's tick interval, passed in rather than read
+    from a clock or a config so the whole composition stays a pure function of the
+    plant.
 
     ``rings`` is non-empty only while the plant's cross-section is being shown —
     one day a year, decided by the adapter (see ``bot.py``'s ``_cross_section``),
-    never by anything here. When it is, the plant speaks about its record instead
-    of its condition and the frame follows; when it is not, which is every other
-    day, this function behaves exactly as it did before rings existed. That the
-    caller decides is the point: the *shape* of a retrospective is this module's
-    business, and which day it falls on is not.
+    never by anything here. It is the **one** event that keeps its instrument row,
+    and that exception is deliberate rather than overlooked. The cross-section is
+    not the plant's face but a reading of its record, and the record is unreadable
+    without it: the plant is forbidden from naming its own years out loud (see the
+    persona bible), so a grey band is legible as *a* bad year and never as *which*.
+    The moisture riding along at the end of that row is Phase 19's own decision,
+    made for the same reason it is being kept — the retrospective outranks the
+    weather for one day a year, and the moisture reading is what stops that from
+    hiding a drought that is running right now.
     """
     state = voice.read_state(plant, moisture_value)
     event = life_event(state, showing_rings=bool(rings))
-    promoted, remaining = _promoted_milestone(event, state)
 
     if event is LifeEvent.RINGS:
         title, body = voice.ring_title(plant.seed, len(rings)), [voice.ring_passage(plant.seed, len(rings))]
+        fields = _fields(event, plant, moisture_value, seconds_per_step, rings)
     else:
         title, body = voice.title(state), [voice.passage(state)]
-    if remaining:
-        body.append("\n".join(remaining))
+        fields = ()
 
-    fields = _fields(event, plant, moisture_value, seconds_per_step, rings)
-    if promoted is not None:
-        fields = (promoted, *fields)
+    milestones = voice.milestone_lines(state)
+    if milestones:
+        body.append("\n".join(milestones))
 
     return Panel(
         event=event,
@@ -635,6 +630,134 @@ def compose(
         title=title,
         body="\n\n".join(body),
         fields=fields,
-        image=_image_placement(event),
+        image=ImagePlacement.FULL,
+        footer=footer(state, plant, seconds_per_step),
+    )
+
+
+# --- Composition: the readings panel -------------------------------------------
+
+
+#: Plain heading for the readings panel. Flat on purpose: this is the one surface
+#: where the plant is being measured rather than listened to, and a title in its
+#: own voice here would blur the line the persona bible draws between the two.
+INSTRUMENT_TITLE = "Readings"
+
+#: The one line of prose on the readings panel, and it is about the panel rather
+#: than about the plant — it exists to keep a reader from mistaking a block of
+#: gauges for something the plant said.
+INSTRUMENT_NOTE = (
+    "Everything this plant's current state actually consists of. "
+    "Instruments beside it, not its own words."
+)
+
+#: The events whose rows the readings panel is assembled from, in the order their
+#: instruments appear. The fullest ordinary row leads, so the four readings that
+#: apply to any living plant come first and in their usual order; each event after
+#: it contributes only what the ones before it did not already have, because
+#: :func:`_instrument_fields` keeps the first field of any given name.
+#:
+#: Deliberately not simply ``LifeEvent`` in declaration order: the events that
+#: contribute nothing new (thirst, drought, steady, death, germination) would just
+#: be passes, and the order below is the reading order of the finished panel.
+_INSTRUMENT_EVENTS: tuple[LifeEvent, ...] = (
+    LifeEvent.FLOURISHING,  # moisture, stage, age, crown
+    LifeEvent.DIEBACK,      # + wood lost
+    LifeEvent.BLOOM,        # + flowerings
+    LifeEvent.EPIPHYTE,     # + the passenger's age
+    LifeEvent.REBIRTH,      # + the line behind it
+    LifeEvent.RINGS,        # + the finished years, and which of them scarred
+)
+
+
+def _instrument_applies(
+    event: LifeEvent,
+    plant: structure.Structure,
+    state: voice.VoiceState,
+    rings: tuple[structure.Ring, ...],
+) -> bool:
+    """Whether this event's row describes something the plant actually has.
+
+    The four instruments every living plant carries need no guard — a healthy
+    plant's ``Wood lost`` reading of ``0 of 300`` is a true and useful thing to
+    say, and so is a crown of zero growing tips on a dead one. The four guarded
+    below are different in kind: each of their rows is written for a plant that is
+    *in* that event, and read against a plant that has never been there it would
+    state something false rather than something dull. A plant that has never
+    flowered has no first flowering, a first-generation plant has no line behind
+    it, and a record with no finished years in it is not a record of zero good
+    years.
+    """
+    if event is LifeEvent.BLOOM:
+        return plant.stats.bloom_count > 0
+    if event is LifeEvent.EPIPHYTE:
+        return state.hosting or plant.epiphyte is not None
+    if event is LifeEvent.REBIRTH:
+        return plant.generation > 1
+    if event is LifeEvent.RINGS:
+        return bool(rings)
+    return True
+
+
+def _instrument_fields(
+    plant: structure.Structure,
+    state: voice.VoiceState,
+    moisture_value: float,
+    seconds_per_step: float,
+    rings: tuple[structure.Ring, ...],
+) -> tuple[Field, ...]:
+    """Every instrument that applies to this plant right now, each one once.
+
+    Assembled by walking :data:`_INSTRUMENT_EVENTS` and taking the union of the
+    per-event rows :func:`_fields` already builds, keeping the first field of each
+    name. That is the whole point of doing it this way rather than writing a
+    second, flat list of readings: there is exactly one place that knows how to
+    build a ``Wood lost`` or an ``Epiphyte`` reading, and it is the same place that
+    knew before this panel existed, so the two can never drift apart.
+    """
+    seen: dict[str, Field] = {}
+    for event in _INSTRUMENT_EVENTS:
+        if not _instrument_applies(event, plant, state, rings):
+            continue
+        for field in _fields(event, plant, moisture_value, seconds_per_step, rings):
+            seen.setdefault(field.name, field)
+    return tuple(seen.values())
+
+
+def compose_instruments(
+    plant: structure.Structure,
+    moisture_value: float,
+    seconds_per_step: float,
+    rings: tuple[structure.Ring, ...] = (),
+) -> Panel:
+    """Frame the same plant as a set of readings: everything, measured, at once.
+
+    The counterpart to :func:`compose`, and the reason that one can afford to
+    carry nothing. Same plant, same instant, same accent — this is one message
+    with two faces rather than two messages, so the colour does not jump when
+    somebody turns it over — but the picture steps back to a thumbnail and the
+    instruments take the message.
+
+    Everything here is plain, in the register the persona bible reserves for
+    readouts: the plant does not narrate its own moisture, and a panel that exists
+    to answer "what is this actually made of" would be worse, not better, for
+    being poetic about it. The plant's words are one button away, which is where
+    they belong.
+
+    Takes exactly the arguments :func:`compose` does, and for the same reason:
+    everything on this panel is derived from the plant, and nothing on it is
+    chosen. Callers are expected to build both panels from a single reading of the
+    state so that the numbers here describe the same instant as the picture beside
+    them.
+    """
+    state = voice.read_state(plant, moisture_value)
+    event = life_event(state, showing_rings=bool(rings))
+    return Panel(
+        event=event,
+        accent=accent(event, plant.seed, plant.stats.bloom_intensity),
+        title=INSTRUMENT_TITLE,
+        body=INSTRUMENT_NOTE,
+        fields=_instrument_fields(plant, state, moisture_value, seconds_per_step, rings),
+        image=ImagePlacement.THUMBNAIL,
         footer=footer(state, plant, seconds_per_step),
     )

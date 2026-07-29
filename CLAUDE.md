@@ -58,6 +58,14 @@ dauerhaft:
    privilegierten Gateway-Intents. Das regelt **wie der Mensch mit einem
    lebendigen Ding interagiert** — nicht, wie reichhaltig dieses Ding selbst
    sein darf.
+   **Buttons sind keine Commands, aber auch kein Freibrief.** Drei Views
+   existieren (`ConfirmGerminationView`, `HelpView`, `PlantSnapshotView`), und
+   alle drei teilen dieselbe Eigenschaft: sie hängen an *einer* ephemeren
+   Antwort, speichern nichts und sind nach ihrem Timeout restlos weg. Die
+   Trennlinie für jede künftige Phase ist deshalb nicht „Command vs. Button",
+   sondern **persistiert es etwas**: ein Button, dessen Wahl irgendwo abgelegt
+   würde — pro Person, pro Server, pro Kanal —, ist ein Settings-Menü mit einer
+   anderen Oberfläche und damit genauso verboten wie ein vierter Command.
 2. **Verhaltensreichtum (bewusst offen, soll über Jahre wachsen):** die Zahl
    und Vielfalt echter, nicht-privilegierter Discord-Signale
    (Nachrichtenautorschaft, Reaktionen, Sprachaktivität, Threads, zeitlicher
@@ -600,6 +608,80 @@ angelegt.
   übrigen Text alle 90 Sekunden neu ziehen ließe — siehe „Tick-Stabilität") oder
   eine Ansage von etwas, das ausdrücklich nichts bedeutet.
 
+- **Phase 21 — Die Kanalnachricht ist die Pflanze (Instrumente hinter einen
+  Button) ✓:** eine vom Maintainer angeordnete Vereinfachung, und die dritte
+  Phase ohne Vitalitätssignal — **gehört wie Ringe und Wind nie in die
+  Signaltabelle unten**. Sie ändert keine Mechanik, kein Rendering, keinen
+  Textinhalt und keine Akzentfarbe; sie ändert allein, **welche Fläche was
+  trägt**.
+  **Die Entscheidung:** die lebende Kanalnachricht zeigt ab jetzt das Bild in
+  voller Größe plus den eigenen Satz der Pflanze — sonst nichts. Keine
+  Feldzeile, auf keinem Lebensereignis: nicht Moisture, Stage, Age, Wood lost,
+  Crown, Flowerings, Epiphyte oder „Its line". Die Begründung ist die Natur
+  dieser Fläche: sie ist die einzige, die **niemand angefordert hat**, steht in
+  einem Kanal, den Leute für etwas anderes benutzen, und zeichnet sich stündlich
+  neu. Eine Zahl neben einem Bild ist das Einzige, was garantiert *statt* des
+  Bildes gelesen wird.
+  **Zwei Nebenwirkungen, beide beabsichtigt:** die Thumbnail-Ausnahme für
+  Keimung und Wiedergeburt entfällt — ein Keimling ist ein paar Pixel Faden in
+  viel Erde, und das ist *wahr*; die Fläche, die die Pflanze zeigen soll, zeigt
+  sie. Und der über die volle Breite hochgezogene Meilenstein entfällt mit den
+  Feldern; jede Meilenstein-Zeile steht wieder als Text der Pflanze im Body
+  (`_promoted_milestone`, `_PROMOTED_NAMES`, `_PROMOTED_KIND`, `_milestones` und
+  `Field.inline` sind entfallen — echter toter Code nach dieser Entscheidung,
+  kein vorsorglich behaltenes Stellrad).
+  **Die Jahresring-Ausnahme überlebt, ausdrücklich statt stillschweigend.** Der
+  Querschnitt behält seine volle Zeile (`Rings`, `Scar rings`, `Moisture`), und
+  zwar aus Phase 19s eigener Begründung, nicht aus Trägheit: er ist nicht das
+  Gesicht der Pflanze, sondern eine *Lesung ihrer Aufzeichnung*, und eine
+  Aufzeichnung ohne Datum ist keine. Die Pflanze darf ihre Jahre nicht selbst
+  aussprechen (Persona-Bibel), also ist ein graues Band ohne das Feld daneben als
+  *ein* schlechtes Jahr lesbar, nie als *welches*. Der mitlaufende
+  Feuchtigkeitswert bleibt aus demselben Grund, aus dem Phase 19 ihn eingeführt
+  hat: die Rückschau schlägt für einen Tag im Jahr das Wetter, und dieser eine
+  Wert ist es, der verhindert, dass sie eine gerade laufende Dürre verdeckt. Ein
+  Panel, das genau einmal jährlich für einen Tag erscheint, ist außerdem das
+  Gegenteil des Problems, das diese Phase löst.
+  **Umgezogen, nicht gelöscht:** die Feldstruktur pro Ereignis bleibt
+  vollständig in `_fields()` und wird von `presentation.compose_instruments`
+  wiederverwendet — als Vereinigung über alle zutreffenden Ereignisse, dedupliziert
+  über den Feldnamen. Damit gibt es weiterhin genau eine Stelle, die weiß, wie
+  ein `Wood lost`- oder `Epiphyte`-Wert entsteht. `_instrument_applies` sperrt
+  dabei nur Zeilen, die etwas *Falsches* behaupten würden (siehe Prinzip 3), nie
+  bloß langweilige.
+  **`/plant` bekommt zwei Gesichter.** Der Default ist identisch zur
+  vereinfachten Kanalnachricht; ein `discord.ui.Button`
+  (`bot.PlantSnapshotView`, Timeout `PLANT_VIEW_TIMEOUT_SECONDS` = 180 s)
+  klappt auf das Instrumenten-Panel um und wieder zurück. **Beide Panels werden
+  einmal, im selben Moment, aus einer einzigen Zustandslesung gebaut** — nicht
+  beim Klick neu berechnet: die Feuchtigkeit zerfällt kontinuierlich, eine
+  spätere Lesung wäre also ein anderer Augenblick als das bereits gerenderte
+  Bild daneben, und der Button ist ausdrücklich eine Blickrichtung auf *einen
+  Schnappschuss*, keine mitlaufende Anzeige. Es wird nichts nachgerendert und
+  nichts neu hochgeladen: beide Panels referenzieren dasselbe `attachment://`,
+  eines im Bild-, eines im Thumbnail-Slot. Jeder Aufruf bekommt seine eigene
+  View an seiner eigenen ephemeren Antwort, also teilen zwei kurz
+  aufeinanderfolgende `/plant` keinerlei Zustand. **Warum das keine
+  Konfiguration ist:** siehe Prinzip 1 unter „Präsentation" — nichts wird
+  gespeichert, nichts ändert sich für den nächsten Betrachter, und die
+  Kanalnachricht bekommt niemals einen Button, niemals einen Toggle und niemals
+  ein Feld.
+  **`/help` neu geschrieben** (dritte, unabhängige Änderung derselben Phase, rein
+  am Text): der Paginierungsmechanismus bleibt unverändert, der Prosastil wird
+  ersetzt. Fünf Seiten statt vier, und die Reihenfolge ist das Argument — was
+  Epiphyte *ist*, was es *liest* (die neue Seite: die sechs Signale und der
+  Hinweis, dass Nachrichteninhalt nie gelesen wird), die drei Commands, was von
+  selbst kommt, was dauerhaft ist. Das Register bleibt **sachlich**: `/help`
+  steht in der Persona-Bibel auf der ungesprochenen Seite und bleibt dort — nicht
+  die Pflanze spricht, sondern ein Erzähler über sie, warm und konkret statt
+  trocken. Jede Zahl ist aus den Konstanten abgeleitet; die zwei Stellen, an
+  denen lesbares Englisch gegen Ableitung gewonnen hat („a day", „half of the one
+  before it"), sind Literale, deren Konstanten direkt geprüft werden, sodass eine
+  Rekalibrierung einen Test bricht statt still zu lügen. `tests/test_bot.py`
+  prüft Commands und Argumente gegen den echten Command-Tree, die
+  Rechte-Behauptung gegen `require_manage_channels` und die versprochenen
+  Messwerte gegen ein echtes Instrumenten-Panel.
+
 **Offen:**
 
 - **Phase 10 (optional) — Die Umwelt:** Tages- und Jahreszeit-Tönung des
@@ -619,7 +701,8 @@ zweites Feature.
 ```
 epiphyte/
 ├── bot.py               # dünner discord-Adapter: Client, Commands, Events,
-│                        #   Scheduler-Verdrahtung (metabolic_tick)
+│                        #   Scheduler-Verdrahtung (metabolic_tick), Views
+│                        #   (HelpView, ConfirmGerminationView, PlantSnapshotView)
 ├── moisture.py          # REINE LOGIK: Feuchtigkeit/Vitalität — Zerfall & Fairness      [Phase 1]
 ├── structure.py         # REINE LOGIK: akkumulierte Struktur, Genom (aus Seed), grow(),
 │                        #   Dieback/Narben, Tod & Nachfolge, Blüte/Samen/Epiphyte,
@@ -638,7 +721,10 @@ epiphyte/
 │                        #   liegen außerhalb von VoiceState            [Phase 13, 15, 19]
 ├── presentation.py      # REINE LOGIK: der Rahmen um die Pflanze — LifeEvent, Akzentfarbe,
 │                        #   Feldstruktur, Bildplatzierung, Footer (siehe „Präsentation");
-│                        #   liefert ein Panel, kein Embed              [Phase 14, 15, 19]
+│                        #   liefert ein Panel, kein Embed. Zwei Panels seit Phase 21:
+│                        #   compose() = Kanalnachricht (Bild + Worte, keine Felder),
+│                        #   compose_instruments() = Instrumente hinter /plants Button
+│                        #                                    [Phase 14, 15, 19, 21]
 ├── render.py            # Struktur → PNG via Pillow (gekapselte I/O); Wurzelwerk und
 │                        #   Stammfuß-Verbreiterung aus root_spread; wind als
 │                        #   defaulted-off Scherung neben dem Dürre-Hang; render_rings()
@@ -813,14 +899,15 @@ Poesie entschlüsseln müssen, um zu verstehen, was kaputt ist.
 | Fläche | Stimme |
 |---|---|
 | Überschrift und Text der lebenden Nachricht (Wachstum, Dürre, Tod, Wiedergeburt) | **gesprochen** |
-| `/plant`-Momentaufnahme (dasselbe Embed) | **gesprochen** |
+| `/plant`-Momentaufnahme (Default-Ansicht, dasselbe Embed) | **gesprochen** |
 | Meilensteine — Blüte, Samen, Epiphyte | **gesprochen** |
 | Querschnitt/Jahresringe (einmal jährlich, ein Tag) | **gesprochen** — aber nie die Jahreszahl; die steht im Feld daneben |
 | Erste Keimung nach der Bestätigung | **gesprochen** (eine Zeile) + ein sachlicher Satz daneben |
+| `/plant`s Instrumenten-Panel (hinter dem Button) | sachlich — der einzige Ort, an dem alle Messwerte auf einmal stehen |
 | Statuszeile des Bots (Presence) | **gesprochen**, aber rotierend (siehe unten) |
 | Fehlende Rechte, unerreichbarer Kanal, Kanal binden/umziehen | sachlich |
 | `/help`, Persistenz-Hinweis, DM-Absage, abgelaufene Dialoge | sachlich |
-| Embed-Felder (Moisture, Stage, Age, Generation, Lived) | sachlich — Instrumente **neben** der Pflanze, nicht ihre Rede |
+| Embed-Felder (Moisture, Stage, Age, Crown, Wood lost …) | sachlich — Instrumente **neben** der Pflanze, nie ihre Rede; seit Phase 21 nur noch im Instrumenten-Panel und in der Ring-Zeile |
 
 ### Vielfalt ohne Zufall
 
@@ -905,6 +992,27 @@ Präsentations-Hälfte derselben Anforderung, die Phase 13 für die Sprache gest
 hat, und sie gilt ab hier dauerhaft — auch für Phase 10 (Umwelt-Tönung) und jedes
 später zugelassene Vitalitätssignal.
 
+### Die zwei Panels (seit Phase 21)
+
+Bevor die Prinzipien gelten, muss klar sein, **auf welche Fläche** sie sich
+beziehen: `presentation.py` baut seit Phase 21 zwei Panels, und der Schnitt
+zwischen ihnen ist der eigentliche Entwurf.
+
+- **Das Umgebungs-Panel** (`compose`) ist die lebende Kanalnachricht. Sie wird
+  jeden Herzschlag neu gebaut, steht in einem Kanal, den Leute für etwas anderes
+  benutzen, und **niemand hat sie angefordert**. Sie trägt deshalb: das Bild in
+  voller Größe (ausnahmslos, auf jedem Ereignis), die eigenen Worte der Pflanze,
+  die zustandsabgeleitete Akzentfarbe und den Footer. **Keine Instrumente.**
+- **Das Instrumenten-Panel** (`compose_instruments`) existiert ausschließlich
+  hinter einem Button auf `/plant` — angefordert, pro Aufruf, von einer Person,
+  für niemanden sonst sichtbar. Dort liegt *jedes* Instrument, das das Modul je
+  gebaut hat, alle auf einmal, im sachlichen Register.
+
+**Für jede künftige Phase gilt das als Vorgabe, nicht als Momentaufnahme:** eine
+neue Messgröße gehört per Default ins Instrumenten-Panel. Sie ins
+Umgebungs-Panel zu heben braucht dieselbe Art ausdrücklicher Begründung, die die
+Ringe (unten) bekommen haben — nicht „ist ja auch interessant".
+
 ### Die vier Prinzipien
 
 1. **Abgeleitet, nie konfiguriert.** Farbe und Form ergeben sich ausschließlich
@@ -912,10 +1020,25 @@ später zugelassene Vitalitätssignal.
    Theme, kein Style-Parameter, kein Vorschau-Command, keine neue
    Konfigurationsfläche. Der Oberflächen-Minimalismus aus der Emergenz-Regel gilt
    für den Rahmen unverändert. Eine Farbwahl für Nutzer wäre exakt derselbe
-   Verstoß wie ein Settings-Menü für die Pflanze.
+   Verstoß wie ein Settings-Menü für die Pflanze. **Der Readings-Button ist keine
+   Ausnahme davon**, und die Begründung ist präzise zu führen statt zu behaupten:
+   er speichert nichts, gilt für genau einen ephemeren Aufruf, ändert nichts für
+   den nächsten Betrachter und nichts an der Kanalnachricht. Er ist eine
+   *momentane Blickrichtung auf einen Schnappschuss*, keine Einstellung. Ein
+   Button, dessen Wahl irgendwo persistiert würde — pro Person, pro Server, pro
+   Kanal —, wäre dagegen sofort ein Settings-Menü mit einer anderen Oberfläche
+   und damit verboten.
 2. **Ein Lebensereignis, eine Form.** `life_event()` verdichtet den Zustand auf
-   genau ein `LifeEvent`, und jedes bekommt eine *eigene* Feldstruktur — nicht
-   dieselbe Zeile mit anderen Werten. Die Reihenfolge in `life_event()` ist die
+   genau ein `LifeEvent`, und jedes bekommt eine *eigene* Feldstruktur in
+   `_fields()` — nicht dieselbe Zeile mit anderen Werten. Seit Phase 21 erreicht
+   diese Zeile das Umgebungs-Panel nicht mehr (Querschnitt ausgenommen, s. u.),
+   ist aber ausdrücklich **nicht gelöscht, sondern umgezogen**: sie ist die
+   alleinige Quelle, aus der `compose_instruments` das Instrumenten-Panel als
+   Vereinigung über alle zutreffenden Ereignisse zusammensetzt. Genau deshalb
+   bleibt die Frage „welche Instrumente hat eine blühende Pflanze" weiterhin an
+   *einer* Stelle beantwortet und wird nie in einer zweiten, flachen Liste
+   wiederholt, die auseinanderdriften könnte. Für das Umgebungs-Panel bestimmt
+   `life_event()` weiterhin Farbe und Worte. Die Reihenfolge in `life_event()` ist die
    eigentliche Entwurfsentscheidung und liest sich in vier Stufen: **Ende oder
    Anfang** (Tod, Keimung, Wiedergeburt) schlägt **was gerade passiert** (Dieback,
    Blüte, Dürre, Durst) schlägt **was der Körper geworden ist** (Epiphyte) schlägt
@@ -931,15 +1054,33 @@ später zugelassene Vitalitätssignal.
 3. **Das Instrumenten-Feld öffnet und schließt sich mit der Pflanze.** Vier Felder
    bei Überfluss, drei im Normalfall, zwei bei Durst, eins in der Dürre, keins bei
    Keimung und Tod — an beiden Enden gibt es nichts zu messen, was die Pflanze
-   nicht selbst besser gesagt hat. Felder bleiben sachlich (Persona-Bibel,
-   „Gesprochen vs. sachlich"); der einzige Feldwert, der je gesprochen ist, ist ein
-   über die volle Breite hochgezogener Meilenstein.
+   nicht selbst besser gesagt hat. Das gilt seit Phase 21 für die *Zeilen* in
+   `_fields()`, aus denen das Instrumenten-Panel gebaut wird, nicht mehr für die
+   Kanalnachricht. Felder bleiben ausnahmslos sachlich (Persona-Bibel,
+   „Gesprochen vs. sachlich") — und zwar jetzt **ausnahmslos wörtlich**: der
+   hochgezogene, über die volle Breite laufende Meilenstein ist entfallen, weil
+   das Umgebungs-Panel keine Felder mehr hat und das Instrumenten-Panel rein
+   sachlich ist. Damit gibt es keinen gesprochenen Feldwert mehr und keine
+   `inline`-Ausnahme; die Meilenstein-Zeilen der Pflanze stehen wieder dort, wo
+   sie geschrieben wurden — in ihren eigenen Worten im Text.
+   **Vorgabe für künftige Phasen:** ein neuer Meilenstein bekommt einen Text-Pool
+   in `voice.py` und — wenn er gemessen werden soll — ein sachliches Feld im
+   Instrumenten-Panel. Er wird nie als gesprochenes Feld in die Kanalnachricht
+   gehoben; das ist die Fläche, die diese Phase leergeräumt hat.
+   **Anwendbarkeit statt Vollständigkeit:** `_instrument_applies` lässt eine
+   Ereigniszeile nur zu, wenn die Pflanze das Ding tatsächlich hat (Blüte, Linie,
+   Passagier, Aufzeichnung). Der Maßstab ist dabei **falsch vs. langweilig**, nicht
+   „Null vs. nicht Null": `Wood lost: 0 of 300` an einer gesunden Pflanze ist wahr
+   und wird gezeigt, `Flowerings: the first` an einer nie erblühten Pflanze wäre
+   eine Falschaussage und wird unterdrückt.
 4. **Eine leise Konstante darunter.** Der Footer ist das einzige Element, dessen
-   *Form* sich nie ändert: seed-abgeleitetes Sigil, Generation, Alter in Tagen,
-   dann die dauerhaften Marken (Samen, Epiphyte). Weil Herkunft und Alter dort
-   stehen, dürfen die Feldzeilen darüber so frei variieren. Das Sigil folgt
-   derselben `blake2b`-Determinismus-Regel wie die Stimme — nie `hash()`, dessen
-   Salt pro Prozess wechselt.
+   *Form* sich nie ändert, und er steht auf **beiden** Panels: seed-abgeleitetes
+   Sigil, Generation, Alter in Tagen, dann die dauerhaften Marken (Samen,
+   Epiphyte). Weil Herkunft und Alter dort stehen, darf das Umgebungs-Panel
+   darüber überhaupt nichts tragen — der Footer ist der Grund, warum das
+   Leerräumen keine Information kostet, die es sonst nirgends gäbe. Das Sigil
+   folgt derselben `blake2b`-Determinismus-Regel wie die Stimme — nie `hash()`,
+   dessen Salt pro Prozess wechselt.
 
 ### Tick-Stabilität, wie bei der Stimme
 
