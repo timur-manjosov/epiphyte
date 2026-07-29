@@ -77,6 +77,19 @@ is fifty rows — and it *is* wiped on rebirth, alongside the three presence
 tables and unlike the two counter tables: rings are wood this particular trunk
 laid down, and no cross-section can contain a year in which this body did not
 exist. See :func:`structure.rings`.
+
+A last, single-row table, ``command_sync``, holds nothing about any plant at
+all: one flag recording whether the guilds this process was already connected
+to on some past startup have been given an instant, guild-specific command
+sync. It exists only because Epiphyte once synced its slash commands to a
+single fixed test guild instead of globally (see ``bot.EpiphyteClient.
+setup_hook``), which left every other guild it was already on silently
+commandless until Discord's global propagation caught up on its own.
+Backfilling every connected guild is worth doing once, right after the fix
+ships, and worth never doing again afterwards — repeating it on every
+container restart would mean one Discord API call per connected guild every
+time the process restarts, for a one-time migration that stays finished
+forever once it has run. See ``bot.EpiphyteClient.on_ready``.
 """
 
 from __future__ import annotations
@@ -236,6 +249,14 @@ class Storage:
                 moisture_sum REAL    NOT NULL,
                 wood_lost    INTEGER NOT NULL,
                 PRIMARY KEY (guild_id, year)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS command_sync (
+                id                  INTEGER NOT NULL PRIMARY KEY CHECK (id = 0),
+                guild_backfill_done INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -708,6 +729,26 @@ class Storage:
         and ``thread_activity``.
         """
         self._connection.execute("DELETE FROM yearly_ring WHERE guild_id = ?", (guild_id,))
+        self._connection.commit()
+
+    def guild_command_backfill_done(self) -> bool:
+        """Whether the once-only, already-connected-guilds command sync has run.
+
+        See the module docstring's note on ``command_sync``: this is ``True``
+        forever once :meth:`mark_guild_command_backfill_done` has been called on
+        any past startup of this database, on this or an earlier deploy.
+        """
+        row = self._connection.execute(
+            "SELECT guild_backfill_done FROM command_sync WHERE id = 0"
+        ).fetchone()
+        return row is not None and bool(row["guild_backfill_done"])
+
+    def mark_guild_command_backfill_done(self) -> None:
+        """Record that the once-only guild command backfill has run."""
+        self._connection.execute(
+            "INSERT INTO command_sync (id, guild_backfill_done) VALUES (0, 1) "
+            "ON CONFLICT (id) DO UPDATE SET guild_backfill_done = 1"
+        )
         self._connection.commit()
 
     def vacuum(self) -> None:

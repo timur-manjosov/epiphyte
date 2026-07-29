@@ -669,10 +669,15 @@ class EpiphyteClient(discord.Client):
     async def setup_hook(self) -> None:
         """Open the database, load states, sync commands, and start the tick.
 
-        If ``EPIPHYTE_GUILD_ID`` is set, the commands are copied into that test
-        guild and synced there (visible immediately); otherwise a global sync is
-        performed, whose delivery by Discord can take up to an hour. The metabolic
-        tick's first beat is one interval away, by when the bot is ready.
+        The commands are always synced globally, so Epiphyte works on every
+        guild it is invited to, not only a fixed test guild — Discord's global
+        propagation can take up to an hour to reach every client, which is what
+        :meth:`on_guild_join` and the one-time backfill in :meth:`on_ready` exist
+        to work around. If ``EPIPHYTE_GUILD_ID`` is set, this also clears any
+        guild-specific commands still registered there from before global sync
+        existed; left in place, that guild would end up with two copies of every
+        command once the global sync below reaches it too. The metabolic tick's
+        first beat is one interval away, by when the bot is ready.
         """
         self._storage = storage.Storage()
         self._states = self._storage.load_all()
@@ -686,10 +691,9 @@ class EpiphyteClient(discord.Client):
         guild_id = os.getenv(GUILD_ENV)
         if guild_id:
             guild = discord.Object(id=int(guild_id))
-            self.tree.copy_global_to(guild=guild)
+            self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
+        await self.tree.sync()
 
         self._scheduler = AsyncIOScheduler()
         self._scheduler.add_job(
@@ -1617,14 +1621,63 @@ class EpiphyteClient(discord.Client):
         self._presence_index += 1
         await self.change_presence(activity=discord.Activity(type=ACTIVITY_TYPES[kind], name=name))
 
+    async def _sync_guild_commands_instantly(self, guild: discord.Guild) -> None:
+        """Copy the global commands into one guild and sync just that guild.
+
+        Global registration (``setup_hook``) can take Discord up to an hour to
+        reach every client. Doing this instead makes commands visible in this
+        one guild right away. Shared by :meth:`on_guild_join`, for a guild
+        joined just now, and :meth:`_backfill_guild_command_sync`, for every
+        guild already connected at startup. A sync failure (permissions, a
+        transient 5xx) is logged and swallowed rather than raised — one bad
+        guild must not stop the loop the backfill runs it in, and this guild
+        still gets its commands eventually once global propagation reaches it.
+        """
+        self.tree.copy_global_to(guild=guild)
+        try:
+            await self.tree.sync(guild=guild)
+        except discord.HTTPException:
+            _log.exception("Could not sync commands to guild %s.", guild.id)
+
+    async def _backfill_guild_command_sync(self) -> None:
+        """Once ever, give every already-connected guild an instant command sync.
+
+        Exists for guilds Epiphyte was already on before global sync existed
+        (see ``setup_hook``): without this, those guilds would sit commandless
+        until Discord's global propagation happened to reach them on its own.
+        :meth:`storage.Storage.guild_command_backfill_done` makes this a true
+        one-time migration — persisted in the database, not just this process
+        — so it never repeats on a later restart and never turns into one
+        Discord API call per connected guild every time the container restarts.
+        """
+        if self._storage is None or self._storage.guild_command_backfill_done():
+            return
+        for guild in self.guilds:
+            await self._sync_guild_commands_instantly(guild)
+        self._storage.mark_guild_command_backfill_done()
+        _log.info("Backfilled instant command sync for %d already-connected guild(s).", len(self.guilds))
+
     async def on_ready(self) -> None:
-        """Start the presence rotation once connected.
+        """Start the presence rotation and, once ever, backfill guild command sync.
 
         ``on_ready`` can fire again on every reconnect, unlike ``setup_hook``, so
-        the loop is only started if it is not already running.
+        the presence loop is only started if it is not already running; the
+        backfill guards itself the same way, but durably (see
+        :meth:`_backfill_guild_command_sync`).
         """
         if not self._rotate_presence.is_running():
             self._rotate_presence.start()
+        await self._backfill_guild_command_sync()
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Give a newly joined guild its commands immediately.
+
+        See :meth:`_sync_guild_commands_instantly` — the same trick
+        :meth:`_backfill_guild_command_sync` performs once for every guild
+        already connected at startup, run here for exactly the one guild that
+        just joined.
+        """
+        await self._sync_guild_commands_instantly(guild)
 
     # --- the living channel message (I/O) ------------------------------------
 
