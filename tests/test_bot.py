@@ -1422,3 +1422,83 @@ def test_a_lone_flooder_cannot_evict_threads_other_people_actually_use() -> None
 
     assert 999 in client._thread_activity[guild_id]
     assert len(client._thread_activity[guild_id]) == bot.MAX_TRACKED_THREADS_PER_GUILD
+
+
+# --- 12: a presence write racing rebirth is serialized, not silently wiped ---
+#
+# advance_life's dead-plant branch stores the germinated successor -- making
+# it the guild's current state synchronously, before its own await -- then
+# separately, sequentially awaits four table clears and a VACUUM. Each of
+# those clears is its own await point, so a concurrent on_message /
+# on_raw_reaction_add / voice-state event for the *same* guild can write a
+# fresh presence row for the new generation into that gap, which the
+# not-yet-run clear then deletes moments later -- the table is keyed only by
+# guild_id, never by generation, so whichever of the write and the clear runs
+# last erases the other's effect. Reproduces the interleaving directly,
+# mirroring test_rebind_racing_an_in_flight_refresh_does_not_mismatch_channel_and_message
+# above (section 5) rather than asserting on a timing coincidence.
+
+
+def _dead_structure(seed: int = 1) -> structure.Structure:
+    """A structure whose only node is dead -- structure.is_dead() is True."""
+    base = structure.germinate(seed=seed)
+    return dataclasses.replace(
+        base, nodes=(dataclasses.replace(base.nodes[0], state=structure.NodeState.DEAD),)
+    )
+
+
+def test_a_presence_write_racing_rebirth_lands_after_the_wipe_not_lost() -> None:
+    """A presence write that fires while a successor is germinating must never
+    be silently discarded by the not-yet-run clear behind it: it either lands
+    before the clear (and is correctly wiped, belonging to the dying
+    generation) or after (and survives, belonging to the new one). What must
+    never happen is the old race -- written, then silently erased."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now = 1_000_000.0
+    client._states[guild_id] = storage.GuildState(
+        guild_id=guild_id,
+        structure=_dead_structure(),
+        moisture=moisture.MIN_MOISTURE,
+        last_update=now,
+        channel_id=100,
+        message_id=None,
+        dead_ticks=bot.DEAD_PHASE_TICKS - 1,
+    )
+    client._author_presence[guild_id] = {999: (5.0, now)}  # the dying generation's own voice
+
+    entered_clear = asyncio.Event()
+    release_clear = asyncio.Event()
+    original_clear = client._clear_author_presence
+
+    async def _blocking_clear(guild_id: int) -> None:
+        entered_clear.set()
+        await release_clear.wait()  # simulate the in-flight clear taking a moment
+        await original_clear(guild_id)
+
+    client._clear_author_presence = _blocking_clear
+
+    async def scenario() -> None:
+        rebirth_task = asyncio.create_task(client.advance_life(guild_id, now))
+        await entered_clear.wait()  # rebirth is inside its lock, past the store
+
+        # Fired concurrently, not awaited inline: the water call now waits on
+        # the same lock the rebirth sequence holds for its whole body.
+        water_task = asyncio.create_task(client._water_author_presence(guild_id, 42, 1.0, now))
+        await asyncio.sleep(0)
+        # Must still be blocked -- the old bug let this write land right here,
+        # in the gap between the successor's store and the clear still ahead.
+        assert 42 not in client._author_presence.get(guild_id, {})
+
+        release_clear.set()
+        await rebirth_task
+        await water_task
+
+    asyncio.run(scenario())
+
+    assert 999 not in client._author_presence[guild_id], (
+        "the dying generation's own row must still be wiped"
+    )
+    assert 42 in client._author_presence[guild_id], (
+        "a presence write racing the wipe must survive it, not be silently erased"
+    )
