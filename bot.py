@@ -565,12 +565,24 @@ class PlantSnapshotView(discord.ui.View):
     for the living channel message, and nothing for the next invocation.
     """
 
-    def __init__(self, plant_embed: discord.Embed, readings_embed: discord.Embed) -> None:
+    def __init__(
+        self, plant_embed: discord.Embed, readings_embed: discord.Embed, author_id: int
+    ) -> None:
         super().__init__(timeout=PLANT_VIEW_TIMEOUT_SECONDS)
         self._faces = (plant_embed, readings_embed)
         self._showing_readings = False
+        self._author_id = author_id
         self.message: discord.Message | None = None
         self._update_button()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only the person who ran ``/plant`` may turn this snapshot over."""
+        if interaction.user.id != self._author_id:
+            await interaction.response.send_message(
+                "Only the person who ran `/plant` can use this button.", ephemeral=True
+            )
+            return False
+        return True
 
     @property
     def embed(self) -> discord.Embed:
@@ -2081,6 +2093,7 @@ async def plant(interaction: discord.Interaction) -> None:
     view = PlantSnapshotView(
         build_plant_embed(display_moisture, state.structure, rings),
         build_instrument_embed(display_moisture, state.structure, rings),
+        author_id=interaction.user.id,
     )
     content = None
     if state.channel_unreachable_since is not None:

@@ -1115,7 +1115,7 @@ def test_two_invocations_do_not_share_button_state(monkeypatch) -> None:
 
 def test_the_button_greys_itself_out_on_timeout() -> None:
     """An expired view disables its button in place rather than erroring later."""
-    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed())
+    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed(), author_id=1)
     view.message = MagicMock()
     view.message.edit = AsyncMock()
 
@@ -1128,13 +1128,30 @@ def test_the_button_greys_itself_out_on_timeout() -> None:
 
 def test_a_timed_out_view_survives_a_deleted_message() -> None:
     """A reply that is already gone must not raise out of the timeout handler."""
-    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed())
+    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed(), author_id=1)
     view.message = MagicMock()
     view.message.edit = AsyncMock(side_effect=_http_exception())
 
     asyncio.run(view.on_timeout())  # must not raise
 
     assert view.toggle.disabled is True
+
+
+def test_plant_snapshot_view_interaction_check_rejects_other_user() -> None:
+    """Someone other than the /plant invoker cannot toggle their ephemeral reply.
+
+    Every other view bound to a per-user ephemeral response (HelpView,
+    ConfirmGerminationView) restricts button presses to its own invoker; this
+    view is the button behind /plant and must hold the same line, not rely
+    solely on Discord's platform-level ephemeral-visibility guarantee.
+    """
+    view = bot.PlantSnapshotView(discord.Embed(), discord.Embed(), author_id=1)
+    interaction = _make_interaction(user_id=2)
+
+    allowed = asyncio.run(view.interaction_check(interaction))
+
+    assert allowed is False
+    interaction.response.send_message.assert_awaited_once()
 
 
 def test_the_living_message_never_gets_a_view() -> None:
