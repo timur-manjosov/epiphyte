@@ -104,6 +104,7 @@ import logging
 import math
 import os
 import random
+import sqlite3
 import time
 from dataclasses import dataclass, replace
 
@@ -643,7 +644,23 @@ class EpiphyteClient(discord.Client):
     def __init__(self) -> None:
         super().__init__(intents=discord.Intents.default())
         self.tree = app_commands.CommandTree(self)
+        #: The one connection reserved for operations that are not guild-scoped:
+        #: startup's ``load_all_*``, the one-time command-cleanup flag, and
+        #: ``VACUUM`` (see :meth:`_reclaim_after_reseed`) — all of which either
+        #: run before any guild has its own connection open, or inherently touch
+        #: the whole file rather than one guild's rows. Every ordinary guild
+        #: write instead goes through its own connection; see
+        #: :meth:`_guild_storage`.
         self._storage: storage.Storage | None = None
+        #: The on-disk path :attr:`_storage` was opened against, remembered so
+        #: :meth:`_guild_storage` can open each guild's own connection to the
+        #: same file. ``None`` until :meth:`setup_hook` runs, mirroring
+        #: :attr:`_storage` itself.
+        self._storage_path: str | None = None
+        #: Per guild: that guild's own database connection, opened lazily on
+        #: first use and cached for the rest of the process's life. See
+        #: :meth:`_guild_storage`.
+        self._guild_storages: dict[int, storage.Storage] = {}
         self._states: dict[int, storage.GuildState] = {}
         self._windows: dict[tuple[int, int], WateringWindow] = {}
         #: Per guild, per author: (presence weight, last_seen). Mirrors
@@ -701,6 +718,14 @@ class EpiphyteClient(discord.Client):
         self._yearly: dict[int, dict[int, structure.YearRecord]] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
         self._rebirth_locks: dict[int, asyncio.Lock] = {}
+        #: Per guild: the lock guarding that guild's own connection in
+        #: :attr:`_guild_storages`, mirroring :attr:`_message_locks` and
+        #: :attr:`_rebirth_locks`. See :meth:`_guild_db_lock`.
+        self._db_locks: dict[int, asyncio.Lock] = {}
+        #: Guards :attr:`_storage`, the one connection several guilds' worth of
+        #: unrelated code can still reach concurrently (startup, and
+        #: :meth:`_reclaim_after_reseed`'s ``VACUUM``) — a single
+        #: ``sqlite3.Connection`` may only be touched by one thread at a time.
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
         self._scheduler: AsyncIOScheduler | None = None
@@ -723,7 +748,8 @@ class EpiphyteClient(discord.Client):
         :meth:`_clear_guild_command_duplicates`. The metabolic tick's first beat
         is one interval away, by when the bot is ready.
         """
-        self._storage = storage.Storage()
+        self._storage_path = storage.DEFAULT_DB_PATH
+        self._storage = storage.Storage(self._storage_path)
         self._states = self._storage.load_all()
         self._author_presence = self._storage.load_all_author_presence()
         self._daily_activity = self._storage.load_all_daily_activity()
@@ -752,13 +778,16 @@ class EpiphyteClient(discord.Client):
         _log.info("Metabolic tick scheduled every %s seconds.", TICK_INTERVAL_SECONDS)
 
     async def close(self) -> None:
-        """Shut down cleanly: stop the presence loop, the scheduler, and the database."""
+        """Shut down cleanly: stop the presence loop, the scheduler, and every
+        database connection — the shared one and each guild's own."""
         if self._rotate_presence.is_running():
             self._rotate_presence.cancel()
         if self._scheduler is not None and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
         if self._storage is not None:
             self._storage.close()
+        for guild_storage in self._guild_storages.values():
+            guild_storage.close()
         await super().close()
 
     # --- state ---------------------------------------------------------------
@@ -800,19 +829,78 @@ class EpiphyteClient(discord.Client):
             self._rebirth_locks[guild_id] = lock
         return lock
 
+    def _guild_storage(self, guild_id: int) -> storage.Storage | None:
+        """Return the guild's own database connection, opening it on first use.
+
+        Every guild-scoped write and load used to go through the single
+        connection in :attr:`_storage`, serialized end to end by one
+        process-wide lock (:attr:`_db_lock`): a guild flooding the bot with
+        messages queued sustained write pressure that every *other* guild's
+        waterings, ticks and command handlers had to wait behind, even though
+        they touch entirely different rows. Giving each guild its own
+        ``sqlite3.Connection`` to the same on-disk file removes that
+        cross-guild queueing: SQLite's own WAL-mode locking then serializes
+        concurrent writers at the file level — held only for the few
+        milliseconds an individual commit takes — instead of a Python lock
+        held across whichever guild happens to be flooding.
+
+        Returns ``None`` before :meth:`setup_hook` has opened the database,
+        mirroring :attr:`_storage`'s own guard — callers already check that the
+        same way (``if self._storage is not None:``). Safe to call unlocked:
+        the get-or-create body below has no ``await`` in it, so — exactly like
+        :meth:`_message_lock` and :meth:`_rebirth_lock` — asyncio can never
+        switch to another task in the middle of it, and two callers racing for
+        the same never-before-seen guild can never each open and cache their
+        own separate connection.
+
+        Deliberately not dispatched through :func:`asyncio.to_thread`, even
+        though opening a connection is blocking I/O: doing so would reopen
+        exactly the race the paragraph above closes (two callers could then
+        both pass the cache-miss check before either finishes opening one).
+        The cost this trades away is small and one-time — an existing guild's
+        connection, to an already-WAL-mode file, opens in low single-digit
+        milliseconds — paid at most once per guild for the life of the
+        process, not on every call.
+        """
+        if self._storage_path is None:
+            return None
+        existing = self._guild_storages.get(guild_id)
+        if existing is not None:
+            return existing
+        opened = storage.Storage(self._storage_path)
+        self._guild_storages[guild_id] = opened
+        return opened
+
+    def _guild_db_lock(self, guild_id: int) -> asyncio.Lock:
+        """Return the guild's own database lock, creating it on first use.
+
+        Guards :meth:`_guild_storage`'s connection the same way :attr:`_db_lock`
+        used to guard the single shared one: a ``sqlite3.Connection`` may only
+        be touched by one thread at a time, and every guild-scoped call is
+        dispatched through :func:`asyncio.to_thread`, which can land on a
+        different worker thread each time. Being keyed per guild, not global,
+        is the entire point — see :meth:`_guild_storage`.
+        """
+        lock = self._db_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._db_locks[guild_id] = lock
+        return lock
+
     async def _store(self, state: storage.GuildState) -> None:
         """Update the in-memory cache and persist the state immediately.
 
         The in-memory cache is updated synchronously, before any ``await``, so
         every reader of :attr:`_states` sees it immediately; only the disk write
         (matching the Pillow render's off-loop pattern) trails behind, serialized
-        through :attr:`_db_lock` since the shared connection may only be touched
-        by one thread at a time.
+        through the guild's own :meth:`_guild_db_lock` against its own
+        :meth:`_guild_storage` connection.
         """
         self._states[state.guild_id] = state
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.save, state)
+        guild_storage = self._guild_storage(state.guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(state.guild_id):
+                await asyncio.to_thread(guild_storage.save, state)
 
     async def _store_watering(self, state: storage.GuildState) -> None:
         """Persist a watering, which moves the moisture but never the body.
@@ -822,9 +910,10 @@ class EpiphyteClient(discord.Client):
         real work in the one place the bot must stay cheap.
         """
         self._states[state.guild_id] = state
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.save_moisture, state)
+        guild_storage = self._guild_storage(state.guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(state.guild_id):
+                await asyncio.to_thread(guild_storage.save_moisture, state)
 
     def state(self, guild_id: int) -> storage.GuildState | None:
         """Return a guild's plant state, or ``None`` if it has no plant yet."""
@@ -940,10 +1029,11 @@ class EpiphyteClient(discord.Client):
             decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
             updated = moisture.water(decayed, amount)
             guild_presence[author_id] = (updated, now)
-            if self._storage is not None:
-                async with self._db_lock:
+            guild_storage = self._guild_storage(guild_id)
+            if guild_storage is not None:
+                async with self._guild_db_lock(guild_id):
                     await asyncio.to_thread(
-                        self._storage.upsert_author_presence, guild_id, author_id, updated, now
+                        guild_storage.upsert_author_presence, guild_id, author_id, updated, now
                     )
 
     async def _record_daily_activity(self, guild_id: int, now: float) -> None:
@@ -960,9 +1050,10 @@ class EpiphyteClient(discord.Client):
         bucket = structure.day_bucket(now)
         guild_days = self._daily_activity.setdefault(guild_id, {})
         guild_days[bucket] = guild_days.get(bucket, 0) + 1
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.increment_daily_activity, guild_id, bucket)
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.increment_daily_activity, guild_id, bucket)
 
     async def _water_reactor_presence(self, guild_id: int, reactor_id: int, now: float) -> None:
         """Add a genuine reaction's anti-farmed watering amount to the reactor's presence weight.
@@ -997,10 +1088,11 @@ class EpiphyteClient(discord.Client):
             decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
             updated = moisture.water(decayed, amount)
             guild_reactors[reactor_id] = (updated, now)
-            if self._storage is not None:
-                async with self._db_lock:
+            guild_storage = self._guild_storage(guild_id)
+            if guild_storage is not None:
+                async with self._guild_db_lock(guild_id):
                     await asyncio.to_thread(
-                        self._storage.upsert_reactor_presence, guild_id, reactor_id, updated, now
+                        guild_storage.upsert_reactor_presence, guild_id, reactor_id, updated, now
                     )
 
     async def _guild_reaction_warmth(self, guild_id: int, now: float) -> float:
@@ -1024,9 +1116,10 @@ class EpiphyteClient(discord.Client):
                 del guild_reactors[reactor_id]
             else:
                 weights.append(decayed)
-        if stale and self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.delete_reactor_presence, guild_id, stale)
+        guild_storage = self._guild_storage(guild_id)
+        if stale and guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.delete_reactor_presence, guild_id, stale)
         return structure.author_breadth(weights)
 
     async def _guild_author_breadth(self, guild_id: int, now: float) -> float:
@@ -1047,9 +1140,10 @@ class EpiphyteClient(discord.Client):
                 del guild_presence[author_id]
             else:
                 weights.append(decayed)
-        if stale and self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.delete_author_presence, guild_id, stale)
+        guild_storage = self._guild_storage(guild_id)
+        if stale and guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.delete_author_presence, guild_id, stale)
         return structure.author_breadth(weights)
 
     async def _guild_rhythm(self, guild_id: int, now: float) -> float:
@@ -1068,9 +1162,10 @@ class EpiphyteClient(discord.Client):
         stale = [bucket for bucket in guild_days if bucket < window_start]
         for bucket in stale:
             del guild_days[bucket]
-        if stale and self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.prune_daily_activity, guild_id, window_start)
+        guild_storage = self._guild_storage(guild_id)
+        if stale and guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.prune_daily_activity, guild_id, window_start)
         counts = [guild_days.get(bucket, 0) for bucket in range(window_start, today + 1)]
         return structure.temporal_rhythm(counts)
 
@@ -1102,10 +1197,11 @@ class EpiphyteClient(discord.Client):
         thread_rows = guild_threads.setdefault(thread_id, {})
         count, first_seen, _ = thread_rows.get(author_id, (0, now, now))
         thread_rows[author_id] = (count + (1 if increment else 0), first_seen, now)
-        if self._storage is not None:
-            async with self._db_lock:
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
                 await asyncio.to_thread(
-                    self._storage.upsert_thread_activity, guild_id, thread_id, author_id, now, increment
+                    guild_storage.upsert_thread_activity, guild_id, thread_id, author_id, now, increment
                 )
 
     async def _guild_thread_depth(self, guild_id: int, now: float) -> float:
@@ -1129,9 +1225,10 @@ class EpiphyteClient(discord.Client):
         ]
         for thread_id in stale_threads:
             del guild_threads[thread_id]
-        if stale_threads and self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.prune_thread_activity, guild_id, cutoff)
+        guild_storage = self._guild_storage(guild_id)
+        if stale_threads and guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.prune_thread_activity, guild_id, cutoff)
 
         qualifying = sum(
             1
@@ -1173,10 +1270,11 @@ class EpiphyteClient(discord.Client):
             decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
             updated = moisture.water(decayed, amount)
             guild_voices[user_id] = (updated, now)
-            if self._storage is not None:
-                async with self._db_lock:
+            guild_storage = self._guild_storage(guild_id)
+            if guild_storage is not None:
+                async with self._guild_db_lock(guild_id):
                     await asyncio.to_thread(
-                        self._storage.upsert_voice_presence, guild_id, user_id, updated, now
+                        guild_storage.upsert_voice_presence, guild_id, user_id, updated, now
                     )
 
     async def _credit_voice_seconds(
@@ -1262,9 +1360,10 @@ class EpiphyteClient(discord.Client):
             if decayed < AUTHOR_PRESENCE_PRUNE_FLOOR:
                 stale.append(user_id)
                 del guild_voices[user_id]
-        if stale and self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.delete_voice_presence, guild_id, stale)
+        guild_storage = self._guild_storage(guild_id)
+        if stale and guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.delete_voice_presence, guild_id, stale)
 
     async def _clear_voice_presence(self, guild_id: int) -> None:
         """Wipe a guild's voice presence, and any call in progress, on rebirth.
@@ -1283,9 +1382,10 @@ class EpiphyteClient(discord.Client):
             del self._voice_seconds[key]
         for key in [key for key in self._voice_windows if key[0] == guild_id]:
             del self._voice_windows[key]
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.clear_voice_presence, guild_id)
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.clear_voice_presence, guild_id)
 
     # --- the record of finished years (the cross-section) ----------------------
 
@@ -1319,10 +1419,11 @@ class EpiphyteClient(discord.Client):
             moisture_sum=(record.moisture_sum if record else 0.0) + moisture_value,
             wood_lost=(record.wood_lost if record else 0) + wood_lost,
         )
-        if self._storage is not None:
-            async with self._db_lock:
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
                 await asyncio.to_thread(
-                    self._storage.record_year_tick, guild_id, year, moisture_value, wood_lost
+                    guild_storage.record_year_tick, guild_id, year, moisture_value, wood_lost
                 )
 
     async def _clear_yearly_rings(self, guild_id: int) -> None:
@@ -1336,9 +1437,10 @@ class EpiphyteClient(discord.Client):
         same way it begins with no crowd and no root system.
         """
         self._yearly.pop(guild_id, None)
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.clear_yearly_rings, guild_id)
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.clear_yearly_rings, guild_id)
 
     def _cross_section(self, guild_id: int, now: float) -> tuple[structure.Ring, ...]:
         """Return the rings to show right now, or empty for the rest of the year.
@@ -1387,9 +1489,10 @@ class EpiphyteClient(discord.Client):
         earn its own again.
         """
         self._author_presence.pop(guild_id, None)
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.clear_author_presence, guild_id)
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.clear_author_presence, guild_id)
 
     async def _clear_reactor_presence(self, guild_id: int) -> None:
         """Wipe a guild's recorded reactors when its successor germinates.
@@ -1398,9 +1501,10 @@ class EpiphyteClient(discord.Client):
         own accumulated crowd, not the lineage's.
         """
         self._reactor_presence.pop(guild_id, None)
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(self._storage.clear_reactor_presence, guild_id)
+        guild_storage = self._guild_storage(guild_id)
+        if guild_storage is not None:
+            async with self._guild_db_lock(guild_id):
+                await asyncio.to_thread(guild_storage.clear_reactor_presence, guild_id)
 
     def _prune_watering_windows(self, now: float) -> None:
         """Drop watering windows whose window has fully elapsed.
@@ -1437,12 +1541,32 @@ class EpiphyteClient(discord.Client):
 
         A death-to-rebirth reseed is a naturally rare event (unlike per-message or
         per-tick writes), and exactly when a large gone structure blob's freed
-        pages become worth returning to the OS. Serialized through the same
-        :attr:`_db_lock` as ordinary saves, so it never runs concurrently with one.
+        pages become worth returning to the OS. Runs on :attr:`_storage`, the one
+        connection reserved for whole-file operations — unlike every guild-scoped
+        write, ``VACUUM`` cannot be narrowed to one guild's own connection, since
+        it rewrites the entire on-disk file.
+
+        That makes this the one write in the whole class that can now
+        legitimately collide with another guild's: any other guild's own
+        connection (see :meth:`_guild_storage`) may be mid-write on the same
+        file while this runs, where before every write funnelled through this
+        same single connection and could never overlap with it. SQLite's own
+        ``busy_timeout`` (:func:`sqlite3.connect`'s ``timeout`` argument,
+        5 seconds by default and left at that default here) already retries
+        for a few seconds before giving up, but a contended VACUUM losing
+        that race raises ``sqlite3.OperationalError``
+        rather than corrupting anything — caught and logged here rather than
+        propagated, since reclaiming disk space is an optimization, not a
+        correctness requirement: the next reseed gets another chance at it,
+        and a plant's own state was already durably stored before this ever
+        runs.
         """
         if self._storage is not None:
             async with self._db_lock:
-                await asyncio.to_thread(self._storage.vacuum)
+                try:
+                    await asyncio.to_thread(self._storage.vacuum)
+                except sqlite3.OperationalError:
+                    _log.exception("VACUUM skipped after reseed; will retry on the next one.")
 
     async def advance_life(self, guild_id: int, now: float) -> None:
         """Advance one guild's plant by a single life-step (the tick's core).
