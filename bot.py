@@ -101,6 +101,7 @@ import asyncio
 import datetime
 import io
 import logging
+import math
 import os
 import random
 import time
@@ -197,6 +198,15 @@ REPO_URL = "https://github.com/timur-manjosov/epiphyte"
 #: enough to read the panel and turn it back over, far short of the fifteen
 #: minutes after which Discord stops accepting edits to the response at all.
 PLANT_VIEW_TIMEOUT_SECONDS = 180
+
+#: Minimum spacing between one person's ``/plant`` calls. Its most expensive path
+#: (``reanchor_channel_message``: delete + render + repost + a full-state write)
+#: is otherwise callable in as tight a loop as Discord's own rate limit allows,
+#: with nothing else in the bot slowing it down. Keyed on the user alone, not
+#: per guild: every guild's writes still funnel through one shared, process-wide
+#: database lock, so a per-guild cooldown would still let one person hammer that
+#: shared lock by round-robining the same command across several guilds.
+PLANT_COMMAND_COOLDOWN_SECONDS = 5.0
 
 #: How often the bot's presence rotates to its next in-fiction status line.
 PRESENCE_ROTATE_MINUTES = 10
@@ -2043,6 +2053,7 @@ async def require_manage_channels(interaction: discord.Interaction) -> bool:
     name="plant",
     description="Show the plant right now, and bring it back into view.",
 )
+@app_commands.checks.cooldown(1, PLANT_COMMAND_COOLDOWN_SECONDS)
 async def plant(interaction: discord.Interaction) -> None:
     """Render an immediate personal snapshot and re-anchor the living message.
 
@@ -2113,6 +2124,31 @@ async def plant(interaction: discord.Interaction) -> None:
 
     if client.living_message_needs_reanchor(state):
         await client.reanchor_channel_message(guild_id)
+
+
+@plant.error
+async def on_plant_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    """Answer a cooldown hit with a plain wait time instead of a silent failure.
+
+    Without a local handler here, the cooldown check's ``CommandOnCooldown``
+    would reach the command tree's default error handler, which only logs it —
+    leaving the interaction unanswered and Discord showing the invoker a bare
+    "This interaction failed" with no explanation. Registering this handler
+    also takes the tree's own default handler out of the loop entirely (it
+    defers to a command's own handler when one exists), so any other error
+    still needs its own explicit log here to avoid going silently missing.
+
+    The wait rounds up, not to the nearest second: someone caught right at the
+    tail of the window (e.g. 0.3s left) still has to wait a moment, and a
+    message reading "in 0s" would say try again *now* while still blocking it.
+    """
+    if isinstance(error, app_commands.CommandOnCooldown):
+        await interaction.response.send_message(
+            f"Slow down — try `/plant` again in {math.ceil(error.retry_after)}s.",
+            ephemeral=True,
+        )
+        return
+    _log.exception("Unhandled error in /plant.", exc_info=error)
 
 
 class ConfirmGerminationView(discord.ui.View):
