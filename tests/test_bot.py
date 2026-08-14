@@ -1351,3 +1351,74 @@ def test_cleanup_marks_done_even_when_one_guild_sync_fails(tmp_path) -> None:
 
     assert client._storage.guild_command_cleanup_done() is True
     client._storage.close()
+
+
+# --- 11: thread-tracking is capped per guild (unbounded-growth regression) ---
+#
+# Every id _record_thread_activity keys its cache by is either a real Discord
+# account (author_id -- costly for one attacker to multiply) or a thread id
+# minted by on_thread_create for literally every thread created, qualifying or
+# not. A single member with ordinary thread-creation permission could once
+# grow self._thread_activity[guild_id] without bound just by opening threads
+# in a loop, which also made _guild_thread_depth's once-a-tick aggregation
+# scan an ever-larger dict directly on the event loop. MAX_TRACKED_THREADS_PER_GUILD
+# closes that off: a guild already at the ceiling simply stops admitting new
+# thread ids until staleness pruning frees room, while a thread already being
+# tracked keeps updating normally.
+
+
+def test_thread_tracking_stays_bounded_under_a_creation_flood() -> None:
+    """Flooding a guild with far more new threads than the cap must not grow
+    its cache past the cap -- this is the unbounded-memory-growth regression
+    itself, reproduced directly against the flood scenario in the report."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now = 0.0
+
+    for thread_id in range(bot.MAX_TRACKED_THREADS_PER_GUILD * 3):
+        asyncio.run(
+            client._record_thread_activity(guild_id, thread_id, thread_id, now, increment=False)
+        )
+
+    assert len(client._thread_activity[guild_id]) == bot.MAX_TRACKED_THREADS_PER_GUILD
+
+
+def test_an_already_tracked_thread_keeps_updating_once_the_guild_is_at_the_cap() -> None:
+    """The cap must refuse admission of *new* thread ids only -- a thread that
+    was already being tracked before the ceiling was hit must go on recording
+    real messages normally, exactly as if the guild were nowhere near it."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now = 0.0
+
+    asyncio.run(client._record_thread_activity(guild_id, 0, 42, now, increment=False))
+    for thread_id in range(1, bot.MAX_TRACKED_THREADS_PER_GUILD + 50):
+        asyncio.run(
+            client._record_thread_activity(guild_id, thread_id, thread_id, now, increment=False)
+        )
+
+    asyncio.run(client._record_thread_activity(guild_id, 0, 42, now + 1.0, increment=True))
+
+    count, first_seen, last_seen = client._thread_activity[guild_id][0][42]
+    assert count == 1, "a message in an already-tracked thread must still increment its count"
+    assert first_seen == now
+    assert last_seen == now + 1.0
+
+
+def test_a_lone_flooder_cannot_evict_threads_other_people_actually_use() -> None:
+    """Once at the cap, a flooder's further thread creations must be dropped
+    outright -- not silently overwrite or evict a thread real conversations
+    are already using -- so the cap is a refusal, not an eviction policy an
+    attacker could exploit to push out genuine activity."""
+    client = bot.EpiphyteClient()
+    guild_id = 1
+    now = 0.0
+
+    asyncio.run(client._record_thread_activity(guild_id, 999, 42, now, increment=False))
+    for thread_id in range(bot.MAX_TRACKED_THREADS_PER_GUILD * 5):
+        asyncio.run(
+            client._record_thread_activity(guild_id, thread_id + 1000, thread_id, now, increment=False)
+        )
+
+    assert 999 in client._thread_activity[guild_id]
+    assert len(client._thread_activity[guild_id]) == bot.MAX_TRACKED_THREADS_PER_GUILD

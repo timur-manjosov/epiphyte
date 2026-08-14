@@ -144,6 +144,21 @@ DEAD_PHASE_TICKS = 3
 #: ever posted once, long after their presence has decayed away.
 AUTHOR_PRESENCE_PRUNE_FLOOR = 0.01
 
+#: Most distinct threads one guild's ``_thread_activity`` cache (and the
+#: matching rows in storage) will hold onto at once. Every other per-guild
+#: cache is naturally bounded — author/reactor/voice presence by how many
+#: genuine Discord accounts have shown up recently, daily_activity by a fixed
+#: number of calendar-day buckets — but a thread id is free for one member to
+#: mint: ``on_thread_create`` fires for every thread regardless of whether it
+#: will ever clear ``structure.thread_qualifies``. Once a guild is at the
+#: ceiling, a brand-new thread is simply not recorded until
+#: ``_guild_thread_depth``'s once-a-tick pruning ages an old one out — the
+#: same trade :data:`structure.THREAD_RECENCY_SECONDS` already makes for
+#: staleness, just also bounding count. Far above
+#: :data:`structure.THREAD_DEPTH_SATURATION_THREADS` (3), so no guild's
+#: genuine thread habit is ever the thing that hits it.
+MAX_TRACKED_THREADS_PER_GUILD = 300
+
 #: Seconds in a whole day — the bucket size structure.day_bucket() groups
 #: messages into for structure.temporal_rhythm().
 DAY_SECONDS = 24 * 60 * 60
@@ -631,7 +646,8 @@ class EpiphyteClient(discord.Client):
         #: ``_guild_thread_depth``; see ``_record_thread_activity``. Carries no
         #: decayed weight, unlike ``self._author_presence`` — a thread's short
         #: life is plain counts and timestamps, not a value that fades over
-        #: weeks (see storage.py's module docstring).
+        #: weeks (see storage.py's module docstring). Each guild's thread count
+        #: is capped at ``MAX_TRACKED_THREADS_PER_GUILD``.
         self._thread_activity: dict[int, dict[int, dict[int, tuple[int, float, float]]]] = {}
         #: Per guild, per person: (presence weight, last_seen) earned by genuine
         #: shared voice time. Mirrors ``self._author_presence`` exactly, just fed
@@ -1013,8 +1029,18 @@ class EpiphyteClient(discord.Client):
         :meth:`on_thread_create`); either way ``last_seen`` advances to ``now``
         and an existing row's ``first_seen`` is preserved, so a row's span
         always starts at whichever of the two events reached this author first.
+
+        A guild already holding :data:`MAX_TRACKED_THREADS_PER_GUILD` distinct
+        threads silently drops activity for any *new* thread id — a thread
+        already being tracked keeps updating normally, only the admission of a
+        never-before-seen thread is refused. Minting fresh thread ids costs a
+        flooder nothing, unlike every other cache this class keeps, so this is
+        the one place that needs an explicit ceiling rather than relying on
+        staleness pruning alone.
         """
         guild_threads = self._thread_activity.setdefault(guild_id, {})
+        if thread_id not in guild_threads and len(guild_threads) >= MAX_TRACKED_THREADS_PER_GUILD:
+            return
         thread_rows = guild_threads.setdefault(thread_id, {})
         count, first_seen, _ = thread_rows.get(author_id, (0, now, now))
         thread_rows[author_id] = (count + (1 if increment else 0), first_seen, now)
