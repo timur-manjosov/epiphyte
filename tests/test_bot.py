@@ -19,6 +19,7 @@ import datetime
 import inspect
 import io
 import re
+import sqlite3
 import time
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -1660,3 +1661,138 @@ def test_plant_error_handler_logs_unexpected_errors_instead_of_swallowing_them(
 
     interaction.response.send_message.assert_not_awaited()
     assert logged
+
+
+# --- 14: per-guild database connections (cross-guild write contention) -------
+#
+# Before this, every guild-scoped write -- every watering, every presence
+# upsert, every tick's year record -- funnelled through one process-wide
+# sqlite3.Connection, serialized end to end by one process-wide asyncio.Lock
+# (_db_lock). A guild flooding the bot with messages queued sustained write
+# pressure that every *other* guild's waterings, ticks and command handlers
+# had to wait behind, even though they touch entirely different rows in the
+# same file. Each guild now gets its own connection (_guild_storage) and its
+# own lock (_guild_db_lock); SQLite's own WAL-mode locking serializes actual
+# concurrent writers at the file level -- held only for the length of one
+# commit -- instead of a Python lock held across whichever guild happens to
+# be flooding. _storage/_db_lock remain, narrowed to the operations that
+# still have to touch the whole file: startup's load_all, the one-time
+# command-cleanup flag, and VACUUM.
+
+
+def test_guild_storage_returns_none_before_setup_hook() -> None:
+    """Mirrors self._storage's own guard: no database yet, no connection."""
+    client = bot.EpiphyteClient()
+    assert client._guild_storage(1) is None
+
+
+def test_guild_storage_opens_a_separate_cached_connection_per_guild(tmp_path) -> None:
+    """Two guilds get two distinct connections; the same guild gets the same one back."""
+    client = bot.EpiphyteClient()
+    client._storage_path = str(tmp_path / "epiphyte.db")
+
+    first_guild_a = client._guild_storage(1)
+    first_guild_b = client._guild_storage(2)
+    second_guild_a = client._guild_storage(1)
+
+    assert first_guild_a is not None
+    assert first_guild_b is not None
+    assert first_guild_a is not first_guild_b  # separate connections per guild
+    assert second_guild_a is first_guild_a  # cached, not reopened
+
+    first_guild_a.close()
+    first_guild_b.close()
+
+
+def test_guild_storage_writes_reach_the_shared_on_disk_file(tmp_path) -> None:
+    """Two guilds' own connections still write into the one shared database file.
+
+    Splitting the connection is only safe if it does not also split the data:
+    both guilds' states must be readable back from the single on-disk file,
+    exactly as when one shared connection wrote them both.
+    """
+    client = bot.EpiphyteClient()
+    client._storage_path = str(tmp_path / "epiphyte.db")
+
+    asyncio.run(client._store(_make_state(guild_id=1)))
+    asyncio.run(client._store(_make_state(guild_id=2)))
+    for guild_storage in client._guild_storages.values():
+        guild_storage.close()
+
+    reader = storage.Storage(client._storage_path)
+    try:
+        loaded = reader.load_all()
+    finally:
+        reader.close()
+    assert set(loaded.keys()) == {1, 2}
+
+
+def test_one_guilds_db_lock_never_blocks_another_guilds_write() -> None:
+    """The reported scenario: guild A holding its own lock must never make
+    guild B's write wait behind it.
+
+    Before this fix there was only one lock (_db_lock) for every guild, so
+    this exact scenario -- guild A's lock held, guild B trying to write --
+    would have deadlocked against the 1-second timeout below (both were the
+    same lock). Now they are different locks, and guild B must succeed
+    immediately.
+    """
+    client = bot.EpiphyteClient()
+    entered_a = asyncio.Event()
+    release_a = asyncio.Event()
+
+    async def scenario() -> None:
+        async def hold_guild_a() -> None:
+            async with client._guild_db_lock(1):
+                entered_a.set()
+                await release_a.wait()
+
+        task_a = asyncio.create_task(hold_guild_a())
+        # Bounded, not a bare wait: if hold_guild_a raises before signaling
+        # (e.g. _guild_db_lock does not exist), entered_a would otherwise
+        # never be set and this would hang instead of failing.
+        await asyncio.wait_for(entered_a.wait(), timeout=1.0)
+
+        acquired_b = False
+
+        async def try_guild_b() -> None:
+            nonlocal acquired_b
+            async with client._guild_db_lock(2):
+                acquired_b = True
+
+        # A guild B write that actually queued behind guild A's lock would
+        # still be waiting when this timeout fires.
+        await asyncio.wait_for(try_guild_b(), timeout=1.0)
+        assert acquired_b is True
+
+        release_a.set()
+        await asyncio.wait_for(task_a, timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+def test_reclaim_after_reseed_survives_a_locked_database(monkeypatch, tmp_path) -> None:
+    """A VACUUM that loses a contention race logs and moves on, rather than
+    crashing the rebirth sequence it runs inside.
+
+    This failure mode is new precisely because of this fix: before it, every
+    write funnelled through the one connection VACUUM itself used, so nothing
+    else could ever be holding a conflicting lock on it. Now that other
+    guilds have their own connections to the same file, VACUUM can genuinely
+    collide with one of them.
+    """
+    client = bot.EpiphyteClient()
+    client._storage_path = str(tmp_path / "epiphyte.db")
+    client._storage = storage.Storage(client._storage_path)
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(client._storage, "vacuum", locked)
+    logged = []
+    monkeypatch.setattr(bot._log, "exception", lambda *args, **kwargs: logged.append(args))
+
+    asyncio.run(client._reclaim_after_reseed())  # must not raise
+
+    assert logged
+    client._storage.close()
