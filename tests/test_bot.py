@@ -15,6 +15,7 @@ matching the rest of this suite's plain-pytest style.
 
 import asyncio
 import dataclasses
+import datetime
 import inspect
 import io
 import re
@@ -22,6 +23,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, call
 
 import discord
+import pytest
 
 import bot
 import moisture
@@ -1519,3 +1521,142 @@ def test_a_presence_write_racing_rebirth_lands_after_the_wipe_not_lost() -> None
     assert 42 in client._author_presence[guild_id], (
         "a presence write racing the wipe must survive it, not be silently erased"
     )
+
+
+# --- 13: /plant carries a per-user cooldown -----------------------------------
+#
+# app_commands.checks.cooldown attaches its predicate to Command.checks and is
+# evaluated by _check_can_run before the callback ever runs -- the same
+# machinery the real command tree calls on every interaction. Calling
+# .callback() directly, as every other /plant test in this file does (e.g.
+# _plant_view), bypasses checks entirely, which is exactly why this needs its
+# own coverage: the reported scenario was a scripted back-to-back loop of real
+# invocations, and checks are the layer that loop actually hits first.
+
+
+def _cooldown_interaction(user_id: int, at: float) -> MagicMock:
+    """An interaction stamped with a controllable creation time.
+
+    app_commands.checks.cooldown reads interaction.created_at, not time.time(),
+    to advance its bucket -- a plain _make_interaction() leaves that attribute
+    as an unconstrained MagicMock, which the cooldown's own arithmetic cannot
+    compare against a float.
+    """
+    interaction = _make_interaction(user_id=user_id)
+    interaction.created_at = datetime.datetime.fromtimestamp(at, tz=datetime.timezone.utc)
+    return interaction
+
+
+def test_plant_command_rejects_a_second_call_inside_the_cooldown_window() -> None:
+    """The reported scenario: back-to-back /plant calls, one user, one guild.
+
+    A fixed synthetic epoch, not time.time(): the cooldown's bucket mapping is
+    closure state private to bot.plant, shared for the whole test session, so
+    two tests both anchored near the real "now" could otherwise collide with
+    each other regardless of which user id they use. Each test in this section
+    gets its own base, spaced well over PLANT_COMMAND_COOLDOWN_SECONDS apart,
+    so none of them can observe another's bucket.
+    """
+    now = 1_000_000.0
+    first = _cooldown_interaction(user_id=1, at=now)
+    second = _cooldown_interaction(user_id=1, at=now + 0.1)
+
+    assert asyncio.run(bot.plant._check_can_run(first)) is True
+    with pytest.raises(discord.app_commands.CommandOnCooldown):
+        asyncio.run(bot.plant._check_can_run(second))
+
+
+def test_plant_command_cooldown_is_per_user_not_per_guild() -> None:
+    """One person hammering /plant cannot burn a second person's allowance.
+
+    The cooldown's key is deliberately left at its default (the invoking user
+    alone, not (guild_id, user_id)) precisely so this holds across guilds too:
+    every guild's writes still funnel through one shared, process-wide database
+    lock, so a per-guild-only cooldown would still let one person round-robin
+    the same command across several guilds to hammer it.
+    """
+    now = 1_100_000.0
+    first = _cooldown_interaction(user_id=1, at=now)
+    other = _cooldown_interaction(user_id=2, at=now)
+
+    assert asyncio.run(bot.plant._check_can_run(first)) is True
+    assert asyncio.run(bot.plant._check_can_run(other)) is True
+
+
+def test_plant_command_allows_a_call_once_the_window_has_passed() -> None:
+    """The cooldown lifts on its own; it is a pace limit, not a lockout."""
+    now = 1_200_000.0
+    first = _cooldown_interaction(user_id=1, at=now)
+    later = _cooldown_interaction(user_id=1, at=now + bot.PLANT_COMMAND_COOLDOWN_SECONDS + 0.1)
+
+    assert asyncio.run(bot.plant._check_can_run(first)) is True
+    assert asyncio.run(bot.plant._check_can_run(later)) is True
+
+
+def test_plant_cooldown_error_handler_answers_with_a_wait_time() -> None:
+    """A cooldown hit gets a plain, ephemeral explanation, not a dead interaction.
+
+    Without bot.on_plant_error, this CommandOnCooldown would reach the command
+    tree's default handler, which only logs it -- the interaction is left
+    unanswered and Discord shows the invoker a bare "This interaction failed".
+    """
+    now = 1_300_000.0
+    first = _cooldown_interaction(user_id=1, at=now)
+    second = _cooldown_interaction(user_id=1, at=now + 0.1)
+    asyncio.run(bot.plant._check_can_run(first))
+
+    with pytest.raises(discord.app_commands.CommandOnCooldown) as excinfo:
+        asyncio.run(bot.plant._check_can_run(second))
+
+    asyncio.run(bot.on_plant_error(second, excinfo.value))
+
+    second.response.send_message.assert_awaited_once()
+    message = second.response.send_message.call_args.args[0]
+    assert "/plant" in message
+    assert "5s" in message  # 4.9s remaining, rounded up -- see the next test for why up
+    assert second.response.send_message.call_args.kwargs["ephemeral"] is True
+
+
+def test_plant_cooldown_wait_time_never_rounds_down_to_zero() -> None:
+    """A caller with a fraction of a second left must not be told "0s".
+
+    Rounding to the nearest second (rather than up) would say exactly that for
+    anyone caught in the last half-second of the window, while the check right
+    behind that message would still block them -- telling someone to retry
+    "now" and then refusing the retry is worse than a plain wrong number.
+    """
+    now = 1_400_000.0
+    first = _cooldown_interaction(user_id=1, at=now)
+    # Inside the window by only a hair: retry_after will be a small fraction.
+    almost_over = _cooldown_interaction(
+        user_id=1, at=now + bot.PLANT_COMMAND_COOLDOWN_SECONDS - 0.1
+    )
+    asyncio.run(bot.plant._check_can_run(first))
+
+    with pytest.raises(discord.app_commands.CommandOnCooldown) as excinfo:
+        asyncio.run(bot.plant._check_can_run(almost_over))
+    assert 0 < excinfo.value.retry_after < 1
+
+    asyncio.run(bot.on_plant_error(almost_over, excinfo.value))
+
+    message = almost_over.response.send_message.call_args.args[0]
+    assert "0s" not in message
+    assert "1s" in message
+
+
+def test_plant_error_handler_logs_unexpected_errors_instead_of_swallowing_them(
+    monkeypatch,
+) -> None:
+    """Registering a local handler takes the tree's own default logging out of
+    the loop entirely (see Command._has_any_error_handlers): this handler must
+    not go quiet for anything other than the one error kind it understands.
+    """
+    logged = []
+    monkeypatch.setattr(bot._log, "exception", lambda *args, **kwargs: logged.append(args))
+    interaction = _make_interaction()
+    boom = discord.app_commands.AppCommandError("boom")
+
+    asyncio.run(bot.on_plant_error(interaction, boom))
+
+    interaction.response.send_message.assert_not_awaited()
+    assert logged
