@@ -678,6 +678,7 @@ class EpiphyteClient(discord.Client):
         #: growth — ``advance_life`` writes to it and never reads it.
         self._yearly: dict[int, dict[int, structure.YearRecord]] = {}
         self._message_locks: dict[int, asyncio.Lock] = {}
+        self._rebirth_locks: dict[int, asyncio.Lock] = {}
         self._db_lock = asyncio.Lock()
         self._presence_index = 0
         self._scheduler: AsyncIOScheduler | None = None
@@ -751,6 +752,30 @@ class EpiphyteClient(discord.Client):
         if lock is None:
             lock = asyncio.Lock()
             self._message_locks[guild_id] = lock
+        return lock
+
+    def _rebirth_lock(self, guild_id: int) -> asyncio.Lock:
+        """Return the guild's death-to-rebirth lock, creating it on first use.
+
+        Serializes the successor-germination sequence in :meth:`advance_life`
+        (store the new generation, then wipe the old one's presence tables)
+        against :meth:`_water_author_presence`, :meth:`_water_reactor_presence`
+        and :meth:`_water_voice_presence` — the three writers of exactly the
+        tables that sequence clears. Without this, a presence event for the
+        same guild can land in the gap between the successor becoming the
+        guild's current state and its predecessor's tables actually being
+        wiped: the write and the clear both touch a table keyed only by
+        ``guild_id``, so whichever runs last silently erases the other's
+        effect, either losing a genuine contribution to the new generation or
+        leaving a stale row the clear meant to remove. Held for the sequence's
+        whole duration rather than per storage call, mirroring
+        :meth:`_message_lock`, so nothing in between can observe a
+        half-transitioned guild.
+        """
+        lock = self._rebirth_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._rebirth_locks[guild_id] = lock
         return lock
 
     async def _store(self, state: storage.GuildState) -> None:
@@ -881,17 +906,23 @@ class EpiphyteClient(discord.Client):
         updated synchronously, mirroring :meth:`_store_watering`, so a second
         message from the same author an instant later always sees this one's
         update; only the disk write trails behind.
+
+        Held under :meth:`_rebirth_lock` for its whole body, memory write and
+        disk write alike, so this can never land in the gap :meth:`advance_life`
+        opens between germinating a successor and wiping this very table — see
+        that lock's docstring for the failure this closes.
         """
-        guild_presence = self._author_presence.setdefault(guild_id, {})
-        weight, last_seen = guild_presence.get(author_id, (0.0, now))
-        decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
-        updated = moisture.water(decayed, amount)
-        guild_presence[author_id] = (updated, now)
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(
-                    self._storage.upsert_author_presence, guild_id, author_id, updated, now
-                )
+        async with self._rebirth_lock(guild_id):
+            guild_presence = self._author_presence.setdefault(guild_id, {})
+            weight, last_seen = guild_presence.get(author_id, (0.0, now))
+            decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            updated = moisture.water(decayed, amount)
+            guild_presence[author_id] = (updated, now)
+            if self._storage is not None:
+                async with self._db_lock:
+                    await asyncio.to_thread(
+                        self._storage.upsert_author_presence, guild_id, author_id, updated, now
+                    )
 
     async def _record_daily_activity(self, guild_id: int, now: float) -> None:
         """Count one message toward its calendar day, feeding temporal rhythm.
@@ -927,23 +958,28 @@ class EpiphyteClient(discord.Client):
         reaction — the caller (:meth:`on_raw_reaction_add`) has already
         excluded a message author reacting to their own message, which counts
         for nothing here or anywhere else.
-        """
-        window = self._reaction_windows.get((guild_id, reactor_id))
-        start = window.window_start if window is not None else None
-        count = window.count if window is not None else 0
-        amount, new_start, new_count = moisture.next_watering(start, count, now)
-        self._reaction_windows[(guild_id, reactor_id)] = WateringWindow(new_start, new_count)
 
-        guild_reactors = self._reactor_presence.setdefault(guild_id, {})
-        weight, last_seen = guild_reactors.get(reactor_id, (0.0, now))
-        decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
-        updated = moisture.water(decayed, amount)
-        guild_reactors[reactor_id] = (updated, now)
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(
-                    self._storage.upsert_reactor_presence, guild_id, reactor_id, updated, now
-                )
+        Held under :meth:`_rebirth_lock` exactly like :meth:`_water_author_presence`,
+        for the same reason: this writes ``reactor_presence``, one of the
+        tables :meth:`advance_life`'s rebirth sequence clears.
+        """
+        async with self._rebirth_lock(guild_id):
+            window = self._reaction_windows.get((guild_id, reactor_id))
+            start = window.window_start if window is not None else None
+            count = window.count if window is not None else 0
+            amount, new_start, new_count = moisture.next_watering(start, count, now)
+            self._reaction_windows[(guild_id, reactor_id)] = WateringWindow(new_start, new_count)
+
+            guild_reactors = self._reactor_presence.setdefault(guild_id, {})
+            weight, last_seen = guild_reactors.get(reactor_id, (0.0, now))
+            decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            updated = moisture.water(decayed, amount)
+            guild_reactors[reactor_id] = (updated, now)
+            if self._storage is not None:
+                async with self._db_lock:
+                    await asyncio.to_thread(
+                        self._storage.upsert_reactor_presence, guild_id, reactor_id, updated, now
+                    )
 
     async def _guild_reaction_warmth(self, guild_id: int, now: float) -> float:
         """Decay this guild's recorded reactors to ``now``, drop the negligible
@@ -1098,23 +1134,28 @@ class EpiphyteClient(discord.Client):
         an afternoon spent in a call is worth a capped fraction of one person's
         daily share and real voice presence still costs several distinct real
         days, exactly as posting does.
-        """
-        window = self._voice_windows.get((guild_id, user_id))
-        start = window.window_start if window is not None else None
-        count = window.count if window is not None else 0
-        amount, new_start, new_count = moisture.next_watering(start, count, now)
-        self._voice_windows[(guild_id, user_id)] = WateringWindow(new_start, new_count)
 
-        guild_voices = self._voice_presence.setdefault(guild_id, {})
-        weight, last_seen = guild_voices.get(user_id, (0.0, now))
-        decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
-        updated = moisture.water(decayed, amount)
-        guild_voices[user_id] = (updated, now)
-        if self._storage is not None:
-            async with self._db_lock:
-                await asyncio.to_thread(
-                    self._storage.upsert_voice_presence, guild_id, user_id, updated, now
-                )
+        Held under :meth:`_rebirth_lock` exactly like :meth:`_water_author_presence`,
+        for the same reason: this writes ``voice_presence``, one of the tables
+        :meth:`advance_life`'s rebirth sequence clears.
+        """
+        async with self._rebirth_lock(guild_id):
+            window = self._voice_windows.get((guild_id, user_id))
+            start = window.window_start if window is not None else None
+            count = window.count if window is not None else 0
+            amount, new_start, new_count = moisture.next_watering(start, count, now)
+            self._voice_windows[(guild_id, user_id)] = WateringWindow(new_start, new_count)
+
+            guild_voices = self._voice_presence.setdefault(guild_id, {})
+            weight, last_seen = guild_voices.get(user_id, (0.0, now))
+            decayed = moisture.decay(weight, now - last_seen, structure.AUTHOR_PRESENCE_HALF_LIFE_SECONDS)
+            updated = moisture.water(decayed, amount)
+            guild_voices[user_id] = (updated, now)
+            if self._storage is not None:
+                async with self._db_lock:
+                    await asyncio.to_thread(
+                        self._storage.upsert_voice_presence, guild_id, user_id, updated, now
+                    )
 
     async def _credit_voice_seconds(
         self, guild_id: int, user_id: int, seconds: float, now: float
@@ -1399,6 +1440,13 @@ class EpiphyteClient(discord.Client):
         one step a bloom begins. All the growth, death and heredity is the pure
         logic in :mod:`structure`; this only reads the clock, runs the small
         state machine and stores the result.
+
+        The store-then-wipe sequence below runs under :meth:`_rebirth_lock`, the
+        same lock :meth:`_water_author_presence`, :meth:`_water_reactor_presence`
+        and :meth:`_water_voice_presence` hold for their own whole bodies — see
+        that lock's docstring for the race this closes between a presence event
+        landing mid-sequence and the wipe meant to clear the generation it just
+        wrote into.
         """
         state = self._states[guild_id]
         current = moisture.decay(state.moisture, now - state.last_update)
@@ -1407,15 +1455,16 @@ class EpiphyteClient(discord.Client):
             dead_ticks = state.dead_ticks + 1
             if dead_ticks >= DEAD_PHASE_TICKS:
                 successor = structure.germinate_successor(state.structure)
-                await self._store(
-                    replace(state, structure=successor, moisture=current,
-                            last_update=now, dead_ticks=0)
-                )
-                await self._clear_author_presence(guild_id)
-                await self._clear_reactor_presence(guild_id)
-                await self._clear_voice_presence(guild_id)
-                await self._clear_yearly_rings(guild_id)
-                await self._reclaim_after_reseed()
+                async with self._rebirth_lock(guild_id):
+                    await self._store(
+                        replace(state, structure=successor, moisture=current,
+                                last_update=now, dead_ticks=0)
+                    )
+                    await self._clear_author_presence(guild_id)
+                    await self._clear_reactor_presence(guild_id)
+                    await self._clear_voice_presence(guild_id)
+                    await self._clear_yearly_rings(guild_id)
+                    await self._reclaim_after_reseed()
             else:
                 await self._store(replace(state, moisture=current, last_update=now, dead_ticks=dead_ticks))
             return
